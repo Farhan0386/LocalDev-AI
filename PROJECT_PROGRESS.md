@@ -3,8 +3,8 @@
 ## Project Overview
 
 - **Project name:** LocalDev AI
-- **Current development phase:** Phase 1B — Python engine foundation
-- **Overall completion:** Phase 1 foundation implemented; validation is blocked by unavailable Python tooling
+- **Current development phase:** Phase 1C — environment validation
+- **Overall completion:** Phase 1 implementation and Python engine validation complete
 - **Last updated:** 2026-11-02
 
 The repository contains the Phase 1A TypeScript VS Code extension scaffold and the Phase 1B Python engine foundation. The documented product is a learning-focused VS Code extension with a local Python engine and Ollama-based inference, beginning with Python support.
@@ -17,11 +17,12 @@ The repository contains the Phase 1A TypeScript VS Code extension scaffold and t
 - Created this initial progress tracker.
 - Completed the Phase 1A extension scaffold and TypeScript compilation.
 - Created the Phase 1B Python package structure and pytest configuration.
+- Completed Phase 1C Python engine validation.
 
 ## Current Tasks
 
 - Phase 1B package implementation is complete.
-- Python validation is pending because Python is unavailable on PATH in the current environment.
+- Phase 1C Python engine validation is complete.
 
 ## Pending Tasks
 
@@ -70,11 +71,11 @@ The VS Code extension was not modified.
 ## Testing Status
 
 - **Tests implemented:** Three pytest unit tests for the Python foundation.
-- **Tests passed:** Not run; Python and pytest are unavailable on PATH.
-- **Tests failed:** Not run; blocked before execution.
-- **Bugs discovered:** Python tooling is unavailable in the current environment.
-- **Bugs resolved:** None.
-- **Validation performed:** `python --version` and `py --version` attempted; both commands were unavailable. The extension Phase 1A compilation remains previously recorded as successful.
+- **Tests passed:** `3 passed in 0.03s` from `python -m pytest engine/tests`.
+- **Tests failed:** None.
+- **Bugs discovered:** None during Python engine validation.
+- **Bugs resolved:** None required.
+- **Validation performed:** Python 3.15.2 was verified, `engine/.venv` was created, the editable package and test dependencies were installed, the package import check returned the expected health payload, and all engine tests passed.
 
 ## Issues and Decisions
 
@@ -103,16 +104,26 @@ The VS Code extension was not modified.
 
 ## Next Steps
 
-1. Install Python 3.10+ and pytest, then run the documented virtual-environment, editable-install, import, and test commands.
-2. Record transport and other integration decisions as an ADR or in the architecture documentation before Phase 2.
-3. Begin Phase 2 only after Python validation succeeds.
+1. Record transport and other integration decisions as an ADR or in the architecture documentation before Phase 2.
+2. Begin Phase 2 only after the remaining integration decisions are resolved.
 
 ## Phase 1B Implementation Record
 
-- **Status:** Package implementation complete; environment validation blocked.
+- **Status:** Package implementation and environment validation complete.
 - **Runtime dependencies:** None beyond the Python standard library.
 - **Test dependency:** `pytest>=7.4` in the optional `test` extra.
-- **Commands attempted:** `python --version`; `py --version`; `python -m venv .venv`; `python -m pip install --editable "engine[test]"`; `python -c "from localdev_ai_engine import health_status; print(health_status())"`; `python -m pytest engine/tests`.
-- **Commands not runnable:** Virtual environment setup, editable installation, package import check, and pytest execution because `python` resolves only to the Windows Store alias and no Python executable is installed on PATH.
-- **Remaining issue:** Install/configure Python 3.10 or newer, then rerun the documented validation commands.
-- **Phase 1 status:** Implementation tasks are complete, but Phase 1 exit criteria are not fully verified until Python package installation and tests run successfully.
+- **Commands executed:** `& 'C:\Users\farha\AppData\Roaming\uv\python\cpython-3.15.2-windows-x86_64-none\python.exe' --version`; `& $python -m venv 'engine\.venv'`; `. 'engine\.venv\Scripts\Activate.ps1'`; `python -m pip install --editable 'engine[test]'`; `python -c "from localdev_ai_engine import health_status; print(health_status())"`; `python -m pytest engine/tests`.
+- **Command results:** Python 3.15.2 verified; editable installation completed successfully; import check returned `{'service': 'localdev-ai-engine', 'status': 'ok', 'version': '0.1.0'}`; pytest passed with `3 passed in 0.03s`.
+- **Remaining issue:** None for Python engine validation.
+- **Phase 1 status:** Python engine implementation and validation exit criteria are verified.
+
+## Phase 1C Validation Record
+
+- **Status:** Complete.
+- **Python version:** Python 3.15.2, verified with the configured interpreter and within the supported `>=3.10` range.
+- **Virtual environment:** `engine\.venv` created and activated with `. engine\.venv\Scripts\Activate.ps1`.
+- **Editable installation:** `python -m pip install --editable 'engine[test]'` completed successfully.
+- **Package import check:** Passed; `health_status()` returned the expected service, status, and version values.
+- **Pytest:** Passed; `python -m pytest engine/tests` reported `3 passed in 0.03s`.
+- **Implementation/configuration fixes:** None required.
+- **Scope:** Only Python engine validation was performed; the TypeScript extension and Ollama integration were not modified or validated.
