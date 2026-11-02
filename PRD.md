@@ -113,12 +113,17 @@ The first version is not aimed at autonomous, large-codebase professional agents
 4. Hardware detection, model discovery, and compatibility estimates.
 5. Benchmarks, resource management, reliability, and documentation.
 
-## 12. Open decisions
+## 12. Remaining open decisions and validation
 
-- Exact extension-to-Python communication mechanism.
-- Supported operating systems and minimum hardware.
+- Cross-platform process management, executable discovery, paths, permissions,
+  shutdown behavior, and validation on Windows, Linux, and macOS.
+- Older Ollama-version compatibility established through testing.
+- Recommended default model, with hardware and quality rationale.
+- Model context limits and user configuration behavior.
 - Which hardware metrics are available on each platform.
 - Whether any local history is needed; SQLite is optional, not a prerequisite.
 - Model shortlist and reproducible evaluation dataset.
+- Patch format and validation before Phase 3.
+- Privacy-safe diagnostics, retention, and any opt-in telemetry policy.
 
 Resolve these through architecture design and experiments rather than assumptions.

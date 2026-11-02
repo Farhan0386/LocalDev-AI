@@ -1,5 +1,6 @@
 node_modules/
 extension/out/
+extension/engine/
 extension/.vscode-test/
 *.vsix
 

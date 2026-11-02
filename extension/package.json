@@ -6,7 +6,7 @@
   "publisher": "localdev-ai",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.100.0"
   },
   "categories": [
     "Other"
@@ -20,16 +20,53 @@
       {
         "command": "localdev-ai.helloWorld",
         "title": "LocalDev AI: Hello World"
+      },
+      {
+        "command": "localdev-ai.refreshModels",
+        "title": "LocalDev AI: Refresh Ollama Models"
+      },
+      {
+        "command": "localdev-ai.selectModel",
+        "title": "LocalDev AI: Select Ollama Model"
+      },
+      {
+        "command": "localdev-ai.explainCode",
+        "title": "LocalDev AI: Explain Selected Python Code"
       }
     ]
   },
+  "configuration": {
+    "title": "LocalDev AI",
+    "properties": {
+      "localdev-ai.ollamaEndpoint": {
+        "type": "string",
+        "default": "http://127.0.0.1:11434",
+        "description": "Ollama server endpoint used by the local Python engine."
+      },
+      "localdev-ai.ollamaTimeoutSeconds": {
+        "type": "number",
+        "default": 5,
+        "minimum": 0.1,
+        "description": "Ollama connection timeout in seconds."
+      },
+      "localdev-ai.selectedModel": {
+        "type": "string",
+        "default": "",
+        "description": "Installed Ollama model selected for future inference."
+      }
+    }
+  },
   "scripts": {
     "compile": "tsc -p ./",
+    "stage-engine": "node scripts/stage-engine.js",
+    "package": "npm run compile && npm run stage-engine && vsce package --no-dependencies",
+    "test": "npm run compile && node --test tests\\pythonEngine.test.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
-    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.6.1",
+    "@types/vscode": "^1.100.0",
     "@types/node": "^20.10.0",
     "typescript": "^5.3.2"
   }

@@ -1,0 +1,10 @@
+node_modules/**
+src/**
+tests/**
+scripts/**
+out/**/*.map
+engine/**/__pycache__/**
+engine/**/*.pyc
+*.vsix
+package-lock.json
+tsconfig.json
