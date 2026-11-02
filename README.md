@@ -38,17 +38,37 @@ These are proposed technologies and should be validated during implementation.
 - [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — phased development
 - [TESTING.md](TESTING.md) — quality, performance, and compatibility testing
 
-## Initial setup (planned)
+## Initial setup
 
-Exact commands depend on the repository scaffold and supported operating systems. The first implementation phase will document reproducible steps to:
-1. Install supported Node.js and Python versions.
-2. Install VS Code extension dependencies.
-3. Create a Python virtual environment and install engine dependencies.
-4. Install and start Ollama.
-5. Pull a compatible local model.
-6. Launch the extension in a VS Code Extension Development Host.
+### Prerequisites
 
-Do not assume these steps are implemented until the scaffold and setup guide are tested.
+- Python 3.10 or newer
+- Node.js and npm for the VS Code extension
+- VS Code for extension development
+
+### Python engine
+
+From the repository root, create and activate a virtual environment:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+```
+
+Install the engine and its test dependencies in development mode:
+
+```powershell
+python -m pip install --editable "engine[test]"
+```
+
+Run the engine tests:
+
+```powershell
+python -m pytest engine/tests
+```
+
+The current engine foundation exposes only an in-process health status check.
+Ollama, extension-to-engine communication, and AI features are not implemented yet.
 
 ## Privacy and safety
 

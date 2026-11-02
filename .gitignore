@@ -1,0 +1,17 @@
+node_modules/
+extension/out/
+extension/.vscode-test/
+*.vsix
+
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+.env
+.env.*
+!.env.example
+
+.DS_Store
+Thumbs.db
