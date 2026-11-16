@@ -1,7 +1,7 @@
 # LocalDev AI — System Architecture
 
-**Status:** Accepted Phase 2 architecture; cross-platform validation and
-model/hardware recommendations remain pending
+**Status:** Accepted and implemented through Phase 5. Windows and Ubuntu
+validation is complete; macOS remains unvalidated.
 
 ## 1. High-level design
 
@@ -69,10 +69,9 @@ Malformed messages produce structured errors without terminating the process.
 The extension owns startup, graceful shutdown, bounded forced termination, and
 restart behavior.
 
-The initial platform target is Windows, Linux, and macOS. Executable
-discovery, platform-specific process management, paths, permissions, and
-shutdown behavior must be documented and tested separately. No platform may
-be described as validated before those tests are performed.
+The platform target is Windows, Linux, and macOS. Windows and Ubuntu process
+management and live Ollama workflows have been validated; macOS remains
+unvalidated. Unsupported metrics are reported as unavailable.
 
 Python distribution is owner-approved as user-managed Python, with a minimum
 version of 3.12. The extension detects Python, checks compatibility, creates
@@ -102,8 +101,8 @@ compatibility requires testing.
 8. User reviews and explicitly accepts/rejects the patch.
 9. User verifies the result by running tests or code.
 
-For the initial implementation, only one inference request is active at a
-time. Additional requests are rejected with a structured retryable `BUSY`
+The implementation allows only one inference request at a time. Additional
+requests are rejected with a structured retryable `BUSY`
 error; there is no request queue in the MVP. The user may cancel the active
 request and retry. Cancellation uses request IDs, propagates to the engine,
 closes the active Ollama streaming connection, ignores late results, and
@@ -124,20 +123,34 @@ limits.
 - Missing metrics must be reported as unavailable, not fabricated.
 - Compatibility is an estimate; measure actual performance.
 
-## 6. Initial technology candidates
+`hardware_diagnostics` reports CPU cores/architecture, total and available
+RAM, optional NVIDIA GPU/VRAM data, installed Ollama models, transparent
+`Comfortable`, `Tight`, `Too Large`, or `Unknown` fit labels, and actionable
+setup guidance. The `localdev-ai.checkHardware` command presents this data in
+the `LocalDev AI Hardware` OutputChannel.
 
-| Area | Candidate | Notes |
+## 6. Learning and reliability features
+
+- `explain_traceback` explains parsed Python syntax and runtime tracebacks.
+- `propose_patch` returns a minimal unified diff for explicit review.
+- `hintOnly` controls hint-first prompts for explanation and patch requests.
+- `engine/scripts/benchmark.py` measures TTFT, total latency, engine RSS, and
+  local-endpoint privacy for four representative requests.
+
+## 7. Implemented technology
+
+| Area | Implementation | Notes |
 |---|---|---|
 | Editor | VS Code Extension API + TypeScript | Native integration |
 | Engine | Python | Diagnostics, inference orchestration, tests |
 | Inference | Ollama | Local model runtime |
-| CLI diagnostics | Typer + Rich | Optional, if a CLI is useful |
-| GPU monitoring | `nvidia-smi`, NVML | NVIDIA-specific |
+| CLI diagnostics | JSONL benchmark script | Dependency-free |
+| GPU monitoring | `nvidia-smi` | NVIDIA-specific |
 | Python analysis | `ast` | Initial lightweight structural checks |
 | Tests | pytest + extension tests | Unit and integration coverage |
 | Local persistence | SQLite only if needed | Not required for MVP |
 
-## 7. Failure handling
+## 8. Failure handling
 
 - Ollama unavailable → show how to start/check it.
 - Model missing → explain how to pull/select a compatible model.
@@ -146,7 +159,7 @@ limits.
 - Model output malformed → do not apply a patch; show safe error.
 - Resource pressure → stop optional work where feasible and explain limits.
 
-## 8. Security and privacy boundaries
+## 9. Security and privacy boundaries
 
 - Default inference path is local.
 - No generated code is executed automatically.
@@ -155,15 +168,14 @@ limits.
 - Document model-download network activity.
 - Verify dependencies and actual network behavior.
 
-## 9. Architecture decisions to record
+## 10. Architecture decisions and validation
 
 The transport, process lifecycle, supported runtime/toolchain policy, request
 schema, streaming strategy, cancellation boundary, Ollama endpoints, and
 initial operational defaults are recorded in
-`ADR-001-EXTENSION-ENGINE-COMMUNICATION.md`. Cross-platform validation, older
-Ollama compatibility, hardware metrics, model recommendation, and patch
-representation remain decisions or tests to complete before their respective
-implementation stages.
+`ADR-001-EXTENSION-ENGINE-COMMUNICATION.md`. Hardware metrics and model
+recommendations are implemented as best-effort estimates. Older Ollama
+compatibility and macOS behavior remain documented validation limitations.
 
 ### Phase 2 Task 1 lifecycle implementation
 
@@ -177,9 +189,9 @@ The extension waits up to 20 seconds for the engine's unscoped JSONL
 `event: "ready"` startup message. It captures stdout for protocol parsing and
 stderr for diagnostics, prevents duplicate starts, detects startup failure and
 unexpected exit, closes stdin for graceful shutdown, and force-terminates
-after a bounded wait. The implementation is platform-neutral Node.js process
-handling; Windows, Linux, and macOS remain unvalidated until tested on each
-platform.
+after a bounded wait. The implementation uses platform-neutral Node.js process
+handling; Windows and Ubuntu validation is complete, while macOS remains
+unvalidated.
 
 For packaged extensions, the build stages only `engine/src` into the VSIX
 under `extension/engine/src`; activation resolves that bundled path rather
@@ -214,8 +226,8 @@ as request-scoped JSONL token events with sequence numbers beginning at one.
 Exactly one terminal response or structured error follows the stream. The
 extension correlates events by request ID, appends tokens incrementally, and
 rejects duplicate or out-of-order sequences without displaying corrupted
-output. Cancellation, patches, code execution, and code modification remain
-out of scope.
+output. Code execution remains out of scope; patch generation and explicit
+patch review are implemented in Phase 3.
 
 The extension's explain command requires a Python editor selection and a
 stored selected model, asks for an optional question, runs the request under a

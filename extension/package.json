@@ -5,6 +5,10 @@
   "version": "0.0.1",
   "publisher": "localdev-ai",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Farhan0386/LocalDev-AI.git"
+  },
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -12,11 +16,40 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:localdev-ai.helloWorld"
+    "onView:localdev-ai.chatView",
+    "onCommand:localdev-ai.openChat",
+    "onCommand:localdev-ai.helloWorld",
+    "onCommand:localdev-ai.checkHardware"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "localdev-ai-sidebar",
+          "title": "LocalDev AI",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "localdev-ai-sidebar": [
+        {
+          "type": "webview",
+          "id": "localdev-ai.chatView",
+          "name": "LocalDev AI Chat"
+        }
+      ]
+    },
     "commands": [
+      {
+        "command": "localdev-ai.openChat",
+        "title": "LocalDev AI: Open Interactive Chat"
+      },
+      {
+        "command": "localdev-ai.newChat",
+        "title": "LocalDev AI: New Chat Session"
+      },
       {
         "command": "localdev-ai.helloWorld",
         "title": "LocalDev AI: Hello World"
@@ -24,6 +57,10 @@
       {
         "command": "localdev-ai.refreshModels",
         "title": "LocalDev AI: Refresh Ollama Models"
+      },
+      {
+        "command": "localdev-ai.checkHardware",
+        "title": "LocalDev AI: Check Hardware and Model Fit"
       },
       {
         "command": "localdev-ai.selectModel",
@@ -73,7 +110,7 @@
     "compile": "tsc -p ./",
     "stage-engine": "node scripts/stage-engine.js",
     "package": "npm run compile && npm run stage-engine && vsce package --no-dependencies",
-    "test": "npm run compile && node --test tests\\pythonEngine.test.js",
+    "test": "npm run compile && node --test tests/*.test.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },

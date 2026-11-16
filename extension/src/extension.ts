@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { PythonEngine } from './pythonEngine';
 import { parsePythonTraceback } from './tracebackParser';
+import { ChatViewProvider } from './chatViewProvider';
+import { applyUnifiedDiff } from './diffUtils';
 
 let engine: PythonEngine | undefined;
 
@@ -15,6 +17,11 @@ function modelNames(response: { message?: unknown } | undefined): string[] {
     ? models.map((model) => (model && typeof model === 'object' && 'name' in model ? (model as { name?: unknown }).name : undefined))
       .filter((name): name is string => typeof name === 'string')
     : [];
+}
+
+function hardwareMessage(response: { message?: unknown } | undefined): Record<string, unknown> {
+  const message = response?.message;
+  return message && typeof message === 'object' ? message as Record<string, unknown> : {};
 }
 
 function ollamaOptions(): Record<string, unknown> {
@@ -103,6 +110,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           void vscode.window.showWarningMessage(`Selected Ollama model "${selected}" is no longer installed. Choose another installed model.`);
         }
         void vscode.window.showInformationMessage(`Found ${names.length} installed Ollama model${names.length === 1 ? '' : 's'}.`);
+      } catch (error) {
+        void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+      }
+    },
+  );
+  const checkHardware = vscode.commands.registerCommand(
+    'localdev-ai.checkHardware',
+    async () => {
+      if (!engine) {
+        void vscode.window.showErrorMessage('The LocalDev AI engine is not running. Reload the extension and retry.');
+        return;
+      }
+      try {
+        const response = await engine.request('hardware_diagnostics', ollamaOptions());
+        const message = hardwareMessage(response);
+        const hardware = message.hardware as { cpu?: { cores?: unknown; architecture?: unknown }; memory?: { total_bytes?: unknown; available_bytes?: unknown }; gpu?: { present?: unknown; name?: unknown; vram_total_bytes?: unknown } } | undefined;
+        const models = Array.isArray(message.models) ? message.models : [];
+        const guidance = Array.isArray(message.guidance) ? message.guidance : [];
+        const output = vscode.window.createOutputChannel('LocalDev AI Hardware');
+        output.clear();
+        output.appendLine('LocalDev AI hardware diagnostics');
+        output.appendLine('');
+        output.appendLine(`CPU: ${hardware?.cpu?.cores ?? 'unknown'} cores, ${hardware?.cpu?.architecture ?? 'unknown'}`);
+        output.appendLine(`RAM: ${formatBytes(hardware?.memory?.available_bytes)} available / ${formatBytes(hardware?.memory?.total_bytes)} total`);
+        output.appendLine(`GPU: ${hardware?.gpu?.present ? `${hardware.gpu.name ?? 'detected'} (${formatBytes(hardware.gpu.vram_total_bytes)} VRAM)` : 'not detected'}`);
+        output.appendLine('');
+        output.appendLine('Model fit estimates:');
+        for (const model of models) {
+          if (model && typeof model === 'object') {
+            const item = model as { name?: unknown; fit?: unknown; reason?: unknown; guidance?: unknown };
+            output.appendLine(`- ${item.name ?? 'unknown'}: ${item.fit ?? 'Unknown'} — ${item.reason ?? ''}`);
+            if (typeof item.guidance === 'string') output.appendLine(`  ${item.guidance}`);
+          }
+        }
+        output.appendLine('');
+        output.appendLine('Setup guidance:');
+        for (const item of guidance) if (typeof item === 'string') output.appendLine(`- ${item}`);
+        output.show(true);
       } catch (error) {
         void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
       }
@@ -311,7 +356,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
   );
 
-  context.subscriptions.push(disposable, refreshModels, selectModel, explainCode, explainTraceback, proposePatch);
+  const chatProvider = new ChatViewProvider(context.extensionUri, () => engine);
+  const chatViewDisposable = vscode.window.registerWebviewViewProvider(
+    ChatViewProvider.viewType,
+    chatProvider,
+    { webviewOptions: { retainContextWhenHidden: true } },
+  );
+
+  const openChat = vscode.commands.registerCommand('localdev-ai.openChat', async () => {
+    await vscode.commands.executeCommand('localdev-ai.chatView.focus');
+  });
+
+  const newChat = vscode.commands.registerCommand('localdev-ai.newChat', async () => {
+    await vscode.commands.executeCommand('localdev-ai.chatView.focus');
+  });
+
+  context.subscriptions.push(
+    disposable,
+    refreshModels,
+    checkHardware,
+    selectModel,
+    explainCode,
+    explainTraceback,
+    proposePatch,
+    chatViewDisposable,
+    openChat,
+    newChat,
+  );
+}
+
+function formatBytes(value: unknown): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'unknown';
+  return `${(value / 1024 ** 3).toFixed(1)} GiB`;
 }
 
 export async function deactivate(): Promise<void> {

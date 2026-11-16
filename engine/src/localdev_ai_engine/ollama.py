@@ -331,11 +331,113 @@ class OllamaClient:
                 "Refresh models and choose an installed model.",
                 retryable=False,
             )
+        messages = [{"role": "user", "content": self._explanation_prompt(code, question, hint_only)}]
+        return self._stream_chat_messages(model, messages, on_token, cancel_event, on_stream_open)
+
+    def chat_session_stream(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        workspace_context: dict[str, Any] | None = None,
+        mode: str = "learn",
+        on_token: Callable[[str], None] | None = None,
+        cancel_event: Event | None = None,
+        on_stream_open: Callable[[Any], None] | None = None,
+    ) -> str:
+        """Stream a multi-turn chat response with workspace context and mode support."""
+
+        if not any(item.name == model for item in self.models()):
+            raise OllamaError(
+                "MODEL_NOT_FOUND",
+                "The selected Ollama model is not installed.",
+                "Refresh models and choose an installed model.",
+                retryable=False,
+            )
+        system_prompt = self._build_chat_system_prompt(mode, workspace_context)
+        payload_messages = [{"role": "system", "content": system_prompt}]
+        for msg in messages:
+            if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                payload_messages.append({
+                    "role": str(msg["role"]),
+                    "content": str(msg["content"]),
+                })
+        return self._stream_chat_messages(model, payload_messages, on_token, cancel_event, on_stream_open)
+
+    def pull_model(
+        self,
+        name: str,
+        on_progress: Callable[[str], None] | None = None,
+        cancel_event: Event | None = None,
+        on_stream_open: Callable[[Any], None] | None = None,
+    ) -> str:
+        """Pull a model from Ollama, streaming download progress."""
+        name = name.strip()
+        if not name:
+            raise OllamaError("REQUEST_INVALID", "No model name was provided to pull.", "Provide a model name and retry.", retryable=False)
+        request = Request(
+            f"{self.endpoint}/api/pull",
+            data=json.dumps({"name": name, "stream": True}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        last_status = ""
+        try:
+            with self._opener(request, timeout=self.timeout_seconds) as response:
+                if on_stream_open:
+                    on_stream_open(response)
+                status = getattr(response, "status", 200)
+                if status < 200 or status >= 300:
+                    raise OllamaError(
+                        "OLLAMA_HTTP_ERROR",
+                        f"Ollama rejected the pull request for '{name}'.",
+                        "Check model name and network connection, then retry.",
+                    )
+                for raw_line in response:
+                    if cancel_event and cancel_event.is_set():
+                        raise OllamaError("REQUEST_CANCELLED", "The model pull was cancelled.", "Pull the model again when ready.", retryable=False)
+                    line = raw_line.decode("utf-8").strip() if isinstance(raw_line, bytes) else str(raw_line).strip()
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(chunk, dict):
+                        status_text = chunk.get("status", "")
+                        total = chunk.get("total")
+                        completed = chunk.get("completed")
+                        if isinstance(total, int) and isinstance(completed, int) and total > 0:
+                            pct = int((completed / total) * 100)
+                            msg = f"{status_text} ({pct}%)"
+                        else:
+                            msg = status_text
+                        if msg and msg != last_status:
+                            last_status = msg
+                            if on_progress:
+                                on_progress(msg)
+                        if chunk.get("status") == "success":
+                            return f"Model '{name}' pulled successfully."
+        except OllamaError:
+            raise
+        except (HTTPError, URLError, TimeoutError, OSError) as error:
+            if cancel_event and cancel_event.is_set():
+                raise OllamaError("REQUEST_CANCELLED", "The model pull was cancelled.", "Pull the model again when ready.", retryable=False) from error
+            raise OllamaError("OLLAMA_UNAVAILABLE", f"Ollama model pull failed: {error}", "Check network connection and Ollama service, then retry.") from error
+        return f"Model '{name}' pulled successfully."
+
+    def _stream_chat_messages(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        on_token: Callable[[str], None] | None = None,
+        cancel_event: Event | None = None,
+        on_stream_open: Callable[[Any], None] | None = None,
+    ) -> str:
         request = Request(
             f"{self.endpoint}/api/chat",
             data=json.dumps({
                 "model": model,
-                "messages": [{"role": "user", "content": self._explanation_prompt(code, question, hint_only)}],
+                "messages": messages,
                 "stream": True,
             }).encode("utf-8"),
             headers={"Content-Type": "application/json"},
@@ -497,6 +599,59 @@ class OllamaClient:
                 retryable=False,
             )
         return result
+
+    @staticmethod
+    def _build_chat_system_prompt(mode: str, workspace_context: dict[str, Any] | None) -> str:
+        if mode == "edit":
+            system_role = (
+                "You are LocalDev AI, an expert local software engineering assistant. "
+                "You help the user inspect, edit, refactor, and build software in their workspace.\n"
+                "CRITICAL SAFETY RULE: You cannot directly modify files on disk yourself. "
+                "To propose file operations, you MUST include structured tool blocks formatted as:\n"
+                "```localdev_tool\n"
+                "{\n"
+                '  "action": "create" | "update" | "delete" | "read",\n'
+                '  "path": "relative/path/to/file",\n'
+                '  "explanation": "Brief explanation of this change",\n'
+                '  "content": "Full file content (for create or full update)",\n'
+                '  "diff": "Unified diff @@ ... @@ (for update/patch)"\n'
+                "}\n"
+                "```\n"
+                "The user will review your proposal and click Approve to apply it. "
+                "Always accompany tool proposals with clear explanations."
+            )
+        else:
+            system_role = (
+                "You are LocalDev AI, an educational, privacy-preserving local coding mentor. "
+                "Explain concepts clearly with pedagogical hints, break down logic step-by-step, "
+                "and guide the user to understand their code. Do not propose unprompted file deletions or destructive actions."
+            )
+
+        if not workspace_context:
+            return system_role
+
+        context_sections = []
+        active_file = workspace_context.get("active_file")
+        if isinstance(active_file, dict) and active_file.get("path"):
+            code = active_file.get("content", "")
+            lang = active_file.get("language", "python")
+            lines = active_file.get("line_range", "")
+            lines_str = f" ({lines})" if lines else ""
+            context_sections.append(f"--- ACTIVE FILE: {active_file['path']}{lines_str} ---\n```{lang}\n{code}\n```")
+
+        referenced_files = workspace_context.get("referenced_files")
+        if isinstance(referenced_files, list):
+            for ref in referenced_files:
+                if isinstance(ref, dict) and ref.get("path"):
+                    context_sections.append(f"--- REFERENCED FILE: {ref['path']} ---\n```\n{ref.get('content', '')}\n```")
+
+        tree = workspace_context.get("directory_tree")
+        if isinstance(tree, str) and tree.strip():
+            context_sections.append(f"--- WORKSPACE DIRECTORY STRUCTURE ---\n{tree.strip()}")
+
+        if context_sections:
+            return f"{system_role}\n\n=== WORKSPACE CONTEXT ===\n" + "\n\n".join(context_sections) + "\n=== END WORKSPACE CONTEXT ==="
+        return system_role
 
     @staticmethod
     def _explanation_prompt(code: str, question: str, hint_only: bool = False) -> str:

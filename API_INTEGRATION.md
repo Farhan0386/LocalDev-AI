@@ -1,7 +1,8 @@
 # LocalDev AI — API and Integration Contract
 
-**Status:** Accepted Phase 2 contract; cross-platform validation, older Ollama
-compatibility, and model/hardware recommendations remain pending.
+**Status:** Accepted and implemented through Phase 5. Windows and Ubuntu
+validation is complete; macOS and older Ollama compatibility remain
+unvalidated.
 
 ## 1. Integration goals
 
@@ -29,14 +30,13 @@ The implementation should:
 - Use `GET /api/version` for the Ollama server version.
 - Use streaming `POST /api/chat` for inference.
 - Do not authenticate local requests.
-- Discover available installed models before inference and present a
-  recommended default model without silently downloading it.
+- Discover available installed models before inference and let the user select
+  an installed model without silently downloading one.
 - Allow the user to select another installed model.
 - If the selected or recommended model is unavailable, return actionable
   guidance to install or select a model; never download one automatically.
-- The recommended model must be documented with hardware-fit and quality
-  considerations before it is selected. This document does not select a
-  specific model.
+- Hardware-fit guidance is presented by `hardware_diagnostics`; the extension
+  does not silently select or download a model.
 
 Tasks 2 and 3 implement Ollama readiness and explanation through the Python
 engine only:
@@ -47,7 +47,7 @@ safe structured errors for unreachable Ollama, timeouts, invalid JSON, invalid
 model metadata, and missing selected models. Empty model lists are valid and
 never trigger a download.
 
-Task 4 uses streaming `POST /api/chat` with the selected installed model.
+`explain_code` uses streaming `POST /api/chat` with the selected installed model.
 The engine sends a focused learner-oriented prompt containing the selected
 Python code and optional question, with `stream: true`. It parses newline-
 delimited chunks, forwards non-empty `message.content` values as ordered token
@@ -55,12 +55,12 @@ events, and returns validated
 `message.content` as the structured response message; `patch` remains `null`.
 Empty code, missing models, unavailable/timeout/HTTP failures, and malformed
 responses produce actionable structured errors. The extension never sends code
-directly to Ollama and never executes or modifies the selected code.
+directly to Ollama, executes generated code, or applies a patch without
+explicit approval.
 
-Target current stable Ollama. Establish older-version compatibility through
-testing and do not claim unverified version compatibility. Endpoint details and
-response formats must still be verified against official documentation during
-implementation.
+Current stable Ollama is the target. Older-version compatibility is
+unvalidated. Endpoint details and response formats are implemented against the
+local API contract and covered by mocked tests.
 
 ## 3. Extension ↔ engine JSONL protocol
 
@@ -118,13 +118,13 @@ Example request shape:
     "file_name": "example.py"
   },
   "options": {
-    "hint_first": false,
+    "hint_only": false,
     "stream": true
   }
 }
 ```
 
-Phase 2 requests require `protocol_version`, `type`, `request_id`, and a
+Requests require `protocol_version`, `type`, `request_id`, and a
 supported `task`. `explain_code` additionally requires `language: "python"`
 and non-empty string `code`; optional `question`, `context`, and `options`
 must have object/string shapes appropriate to their use. Unsupported fields,
@@ -133,16 +133,21 @@ malformed types are rejected with structured errors. Every incoming JSONL line
 is limited to 64 KiB when encoded as UTF-8; oversized lines are rejected
 without terminating the engine.
 
-Phase 2 task names:
+Implemented task names:
 - `explain_code`
 - `check_setup`
 - `discover_models`
 - `select_model`
+- `explain_traceback`
+- `propose_patch`
+- `hardware_diagnostics`
 
-Later-phase task names:
-
-- Phase 3: `explain_error`, `give_hint`, `suggest_patch`, `generate_snippet`
-- Phase 5: `benchmark_model`
+`explain_traceback` and `propose_patch` use a parsed traceback in
+`options.traceback`; `propose_patch` also requires `options.code` and a
+selected installed model. `hardware_diagnostics` reports hardware, installed
+models, fit estimates, and setup guidance. The standalone
+`engine/scripts/benchmark.py` exercises these JSONL tasks and does not add a
+protocol task.
 
 ## 5. Response and streaming contract
 
@@ -174,9 +179,10 @@ text content:
 ```
 
 Token events are followed by exactly one terminal `response` or `error`.
-The terminal response contains the complete normalized message. Phase 2
-`explain_code` responses keep `patch` set to `null`; patch representation
-remains deferred until Phase 3.
+The terminal response contains the complete normalized message.
+`explain_code`, `explain_traceback`, and `propose_patch` return their result
+in `message`; `patch` remains `null` because proposed diffs are reviewed in
+the extension's output/diff surface.
 
 Only one inference request is active initially. Additional requests are
 rejected with a structured retryable `BUSY` error; there is no request queue in
@@ -267,13 +273,14 @@ never applies incomplete or malformed output.
 - Explain that downloading models requires network access.
 - Test actual network activity and document dependencies that may communicate externally.
 
-## 9. Remaining decisions before implementation
+## 9. Implemented scope and limitations
 
-Choose and document:
-1. Platform-specific process behavior and validation on Windows, Linux, and
-   macOS.
-2. Older Ollama compatibility established through testing.
-3. Recommended default model, with hardware and quality rationale.
-4. Model context limits and user configuration behavior.
-5. Patch format and validation before Phase 3.
-6. Hardware metrics and evaluation dataset before later phases.
+The transport, task routing, streaming, cancellation, patch review, hardware
+diagnostics, and benchmark are implemented. The engine uses only the Python
+standard library at runtime; Ollama remains a required local runtime for model
+inference and is never downloaded or selected automatically.
+
+Windows and Ubuntu live workflows are validated. macOS and older Ollama
+versions remain unvalidated. Hardware fit labels and benchmark measurements
+are estimates affected by available memory, quantization, context size,
+Ollama scheduling, and operating-system metrics.

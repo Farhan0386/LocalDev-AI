@@ -1,6 +1,6 @@
 # LocalDev AI — Testing and Quality Plan
 
-**Status:** Draft v0.1
+**Status:** Final baseline for the signed-off Phase 1–5 implementation
 
 ## 1. Testing goals
 
@@ -44,14 +44,14 @@ Validate useful coding assistance, safe patch behavior, reliability, hardware co
 
 ## 3. Quality evaluation set
 
-Build a small, version-controlled set of Python examples covering:
+The version-controlled benchmark set in `engine/scripts/benchmark.py` covers:
 - Syntax errors.
 - Index and key errors.
 - Type errors.
 - Incorrect conditions and loops.
 - Function arguments and return values.
 - Common standard-library usage.
-- Small code explanation and refactoring tasks.
+- Small code explanation and patch-proposal tasks.
 
 For each case, record the task, expected properties, model/runtime version, hardware, outcome, and reviewer notes. Avoid evaluating only on cherry-picked successful examples.
 
@@ -70,7 +70,8 @@ For each case, record the task, expected properties, model/runtime version, hard
 | Model fit | Compare estimate with observed load and successful inference |
 | Reliability | Success/failure counts across defined scenarios |
 
-Do not invent universal thresholds before collecting a baseline. Establish targets after measuring representative student hardware.
+Do not treat the recorded values as universal thresholds. Compare future
+measurements with the same model, hardware, context, and Ollama settings.
 
 ## 5. Hardware compatibility matrix
 
@@ -94,12 +95,26 @@ Record OS, CPU, RAM, GPU/VRAM, driver/runtime versions, model, quantization, con
 - Confirm no patch is applied without explicit approval.
 - Confirm errors do not leak source code or secrets.
 
-## 7. Release checklist
+## 7. Benchmark & Reliability Baseline
 
-- [ ] Automated tests pass.
-- [ ] Known failure modes are tested.
-- [ ] Setup instructions are verified on a clean environment.
-- [ ] Model and hardware details accompany benchmark results.
-- [ ] Privacy/network behavior is documented.
-- [ ] Patch review and explicit consent work.
-- [ ] Limitations and unsupported metrics are clearly stated.
+Run the dependency-free benchmark from the repository root:
+
+```powershell
+python engine\scripts\benchmark.py --model qwen3:4b
+```
+
+It exercises syntax-error explanation, index-error explanation, code explanation, and patch proposal through the local JSONL engine. The summary records time-to-first-token where streaming is available, total latency, peak engine RSS when exposed by the operating system, and a privacy verdict that fails for non-local Ollama endpoints. Requests are bounded and a timed-out inference is cancelled before the process exits.
+
+The recorded live baseline used Windows with 16 logical CPU cores, approximately 14.7 GiB system RAM, an NVIDIA GeForce RTX 3050 Laptop GPU with 4 GiB VRAM, and Ollama `qwen3:4b`. Ubuntu 26.10 was also validated with Ollama `0.40.15` and `qwen2.5:1.5b`; streaming and cooperative cancellation completed successfully. Resource-pressure results depend on other applications, context size, quantization, and Ollama scheduling, so benchmark values are comparative rather than universal targets.
+
+Known limitations: macOS remains unvalidated; process RSS metrics vary by operating system; non-streaming tasks have no TTFT value; model-fit estimates are conservative size heuristics; and local model size/VRAM bounds can prevent inference even when the engine itself starts.
+
+## 8. Release checklist
+
+- [x] Automated tests pass.
+- [x] Known failure modes are tested.
+- [x] Setup instructions are documented and verified in supported environments.
+- [x] Model and hardware details accompany benchmark results.
+- [x] Privacy/network behavior is documented.
+- [x] Patch review and explicit consent work.
+- [x] Limitations and unsupported metrics are clearly stated.

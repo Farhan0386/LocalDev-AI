@@ -4,7 +4,9 @@ A lightweight, learning-focused AI coding assistant for Visual Studio Code, desi
 
 ## Vision
 
-LocalDev AI helps users understand programming errors, debug code, generate small snippets, and review minimal fixes inside VS Code. It is designed around local inference, initially using Ollama, so core coding assistance does not require a paid cloud AI API.
+LocalDev AI helps users understand programming errors, debug code, and review
+minimal fixes inside VS Code. It uses local Ollama inference, so core coding
+assistance does not require a paid cloud AI API.
 
 ## Core features
 
@@ -14,19 +16,18 @@ LocalDev AI helps users understand programming errors, debug code, generate smal
 4. **Hardware-aware model selection** — inspect supported system resources and estimate model compatibility.
 5. **Resource-conscious operation** — measure inference costs and avoid unnecessary background work.
 
-## Proposed technology
+## Implemented technology
 
 - VS Code Extension API + TypeScript
-- Python local engine
+- Python 3.12+ local engine over JSONL
 - Ollama for local model inference
 - pytest and VS Code extension tests
-- Optional NVIDIA metrics through `nvidia-smi`/NVML where supported
-
-These are proposed technologies and should be validated during implementation.
+- NVIDIA GPU metrics through `nvidia-smi` where supported
+- Dependency-free benchmark and local privacy verification
 
 ## Project status
 
-**Planning / early prototype.** The documents describe intended behavior; they do not mean the features have already been implemented.
+**Complete prototype.** Phases 1–5 are implemented and signed off. Windows and Ubuntu validation is complete; macOS remains unvalidated.
 
 ## Documentation
 
@@ -34,15 +35,15 @@ These are proposed technologies and should be validated during implementation.
 - [DESIGN.md](DESIGN.md) — UX and interaction design
 - [ARCHITECTURE.md](ARCHITECTURE.md) — components and data flow
 - [DATABASE.md](DATABASE.md) — persistence decision and optional schema
-- [API_INTEGRATION.md](API_INTEGRATION.md) — proposed integration contract
-- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — phased development
+- [API_INTEGRATION.md](API_INTEGRATION.md) — implemented JSONL and Ollama contract
+- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — completed implementation phases
 - [TESTING.md](TESTING.md) — quality, performance, and compatibility testing
 
 ## Initial setup
 
 ### Prerequisites
 
-- Python 3.10 or newer
+- Python 3.12 or newer
 - Node.js and npm for the VS Code extension
 - VS Code for extension development
 
@@ -61,24 +62,44 @@ Install the engine and its test dependencies in development mode:
 python -m pip install --editable "engine[test]"
 ```
 
-Run the engine tests:
+Run the engine tests and extension tests:
 
 ```powershell
 python -m pytest engine/tests
 ```
 
-The current engine foundation exposes only an in-process health status check.
-Ollama, extension-to-engine communication, and AI features are not implemented yet.
+```powershell
+Set-Location extension
+npm test
+```
+
+The engine supports `check_setup`, Ollama model discovery/selection,
+streaming `explain_code`, `explain_traceback`, `propose_patch`, and
+`hardware_diagnostics`. The extension also provides model management,
+explanation, traceback, patch-review, and `localdev-ai.checkHardware`
+commands.
+
+Run the Phase 5 baseline from the repository root:
+
+```powershell
+python engine\scripts\benchmark.py --model qwen3:4b
+```
+
+The benchmark reports TTFT where streaming is available, total latency, peak
+engine RSS, and whether the configured Ollama endpoint is local.
 
 ## Privacy and safety
 
-- Core inference should be local.
+- Core inference is local through the configured Ollama endpoint.
 - Model downloads require network access and should be clearly explained.
 - Source code should not be sent to cloud AI APIs by default.
 - Generated patches must be reviewed before application.
 - Generated code must not execute automatically.
 - Actual dependency network behavior must be tested and documented.
 
-## Development approach
+## Development and verification
 
-Build incrementally: foundation → Ollama integration → learning features and patch review → hardware diagnostics → benchmarking and reliability. Run tests at each stage and record measured results rather than promising unsupported performance.
+Run `npm run compile` in `extension/`, `npm test` in `extension/`, and
+`PYTHONPATH=engine/src pytest engine/tests` from the repository root. Model-fit
+and benchmark results are estimates; hardware, quantization, context size,
+Ollama scheduling, and operating-system support affect observed performance.

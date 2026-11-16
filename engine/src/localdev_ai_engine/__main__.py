@@ -6,9 +6,10 @@ import json
 import sys
 from dataclasses import dataclass, field
 from threading import Event, Lock, Thread
-from typing import Any
+from typing import Any, cast
 
 from .ollama import DEFAULT_OLLAMA_ENDPOINT, OllamaClient, OllamaError
+from .hardware import detect_hardware, estimate_model_fit, recommend_model
 from .status import health_status
 
 PROTOCOL_VERSION = "1"
@@ -20,6 +21,9 @@ SUPPORTED_TASKS = {
     "explain_code",
     "explain_traceback",
     "propose_patch",
+    "hardware_diagnostics",
+    "chat_session",
+    "pull_model",
 }
 SUPPORTED_LANGUAGE = "python"
 REQUEST_FIELDS = {
@@ -33,6 +37,11 @@ REQUEST_FIELDS = {
     "traceback",
     "context",
     "options",
+    "messages",
+    "mode",
+    "workspace_context",
+    "model",
+    "name",
 }
 
 
@@ -79,12 +88,13 @@ def main() -> None:
             continue
         validation_error = _validate_message(request)
         if validation_error:
-            code, message, action = validation_error
-            _error(request, code, message, action, False, output_lock)
+            validation_code, validation_message, validation_action = validation_error
+            _error(request, validation_code, validation_message, validation_action, False, output_lock)
             continue
 
         if request["type"] == "cancel":
             request_id = request.get("request_id")
+            response = None
             with active_lock:
                 current = active
                 matches = current is not None and current.request.get("request_id") == request_id
@@ -100,7 +110,7 @@ def main() -> None:
             continue
 
         task = request.get("task")
-        if task in {"explain_code", "explain_traceback", "propose_patch"}:
+        if task in {"explain_code", "explain_traceback", "propose_patch", "chat_session", "pull_model"}:
             with active_lock:
                 if active is not None and active.thread is not None and active.thread.is_alive():
                     _error(request, "BUSY", "An explanation request is already active.", "Wait for it to finish or cancel it, then retry.", True, output_lock)
@@ -139,6 +149,30 @@ def main() -> None:
                 _respond(request, task, readiness, output_lock)
             except OllamaError as error:
                 _error(request, error.code, error.message, error.action, error.retryable, output_lock)
+        elif task == "hardware_diagnostics":
+            hardware = detect_hardware()
+            models: list[dict[str, object]] = []
+            ollama_error: dict[str, object] | None = None
+            try:
+                models = [model for model in OllamaClient(endpoint, float(timeout)).readiness()["models"] if isinstance(model, dict)]
+            except OllamaError as error:
+                ollama_error = {
+                    "code": error.code,
+                    "message": error.message,
+                    "action": error.action,
+                }
+            fit = estimate_model_fit(hardware, models)
+            recommendation = recommend_model(hardware)
+            message: dict[str, object] = {
+                "hardware": hardware,
+                "models": fit["models"],
+                "guidance": fit["guidance"],
+                "recommendation": recommendation,
+            }
+            if ollama_error:
+                message["ollama_error"] = ollama_error
+                message["guidance"] = [*fit["guidance"], ollama_error["action"]]
+            _respond(request, task, message, output_lock)
         else:
             _error(request, "REQUEST_INVALID", "This engine task is not implemented yet.", "Retry after the requested Phase 2 feature is available.", False, output_lock)
 
@@ -170,7 +204,7 @@ def _run_inference(active: ActiveInference, output_lock: Lock, active_lock: Lock
     task = request.get("task")
     endpoint = options.get("ollama_endpoint", DEFAULT_OLLAMA_ENDPOINT)
     timeout = options.get("ollama_timeout_seconds", 5.0)
-    model = options.get("model")
+    model = options.get("model") or options.get("name") or request.get("model") or request.get("name")
     code = request.get("code", options.get("code"))
     question = request.get("question", "")
     traceback = request.get("traceback", options.get("traceback"))
@@ -218,16 +252,37 @@ def _run_inference(active: ActiveInference, output_lock: Lock, active_lock: Lock
         if task == "explain_code":
             if hint_only:
                 explanation = client.explain_code_stream(
-                    model, code, question, emit_token, active.cancel_event, stream_opened, True
+                    model, cast(str, code), question, emit_token, active.cancel_event, stream_opened, True
                 )
             else:
                 explanation = client.explain_code_stream(
-                    model, code, question, emit_token, active.cancel_event, stream_opened
+                    model, cast(str, code), question, emit_token, active.cancel_event, stream_opened
                 )
         elif task == "explain_traceback":
-            explanation = client.explain_traceback(model, traceback, hint_only)
-        else:
-            explanation = client.propose_patch(model, code, traceback, hint_only)
+            explanation = client.explain_traceback(model, cast(dict[str, Any], traceback), hint_only)
+        elif task == "propose_patch":
+            explanation = client.propose_patch(model, cast(str, code), cast(dict[str, Any], traceback), hint_only)
+        elif task == "chat_session":
+            raw_messages = options.get("messages", request.get("messages", []))
+            messages = raw_messages if isinstance(raw_messages, list) else []
+            workspace_context = options.get("workspace_context", request.get("workspace_context"))
+            mode = options.get("mode", request.get("mode", "learn"))
+            explanation = client.chat_session_stream(
+                model,
+                cast(list[dict[str, Any]], messages),
+                workspace_context=cast(dict[str, Any], workspace_context) if isinstance(workspace_context, dict) else None,
+                mode=str(mode),
+                on_token=emit_token,
+                cancel_event=active.cancel_event,
+                on_stream_open=stream_opened,
+            )
+        elif task == "pull_model":
+            explanation = client.pull_model(
+                model,
+                on_progress=emit_token,
+                cancel_event=active.cancel_event,
+                on_stream_open=stream_opened,
+            )
         if not active.cancel_event.is_set():
             _finish(active, lambda: _respond(request, task, explanation, output_lock), active_lock)
     except OllamaError as error:
@@ -323,7 +378,7 @@ def _validate_message(request: dict[str, object]) -> tuple[str, str, str] | None
         return (
             "REQUEST_INVALID",
             "The requested engine task is not supported.",
-            "Use a supported Phase 2 task and retry.",
+            "Use a supported engine task and retry.",
         )
     unexpected = set(request) - REQUEST_FIELDS
     if unexpected:
@@ -343,6 +398,18 @@ def _validate_message(request: dict[str, object]) -> tuple[str, str, str] | None
             "REQUEST_INVALID",
             "The request context must be an object.",
             "Send context as a JSON object and retry.",
+        )
+    if "messages" in request and not isinstance(request["messages"], list):
+        return (
+            "REQUEST_INVALID",
+            "The request messages must be a list.",
+            "Send messages as a JSON array and retry.",
+        )
+    if "workspace_context" in request and not isinstance(request["workspace_context"], dict):
+        return (
+            "REQUEST_INVALID",
+            "The workspace context must be an object.",
+            "Send workspace context as a JSON object and retry.",
         )
     options = request.get("options")
     if task in {"explain_traceback", "propose_patch"}:
