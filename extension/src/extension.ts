@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { PythonEngine } from './pythonEngine';
+import { parsePythonTraceback } from './tracebackParser';
 
 let engine: PythonEngine | undefined;
 
@@ -21,7 +22,51 @@ function ollamaOptions(): Record<string, unknown> {
   return {
     ollama_endpoint: configuration.get<string>('ollamaEndpoint', 'http://127.0.0.1:11434'),
     ollama_timeout_seconds: configuration.get<number>('ollamaTimeoutSeconds', 5),
+    hint_only: configuration.get<boolean>('hintOnly', false),
   };
+}
+
+function proposedSource(patch: string, original: string): string | undefined {
+  const content = patch
+    .replace(/^```diff\s*/i, '')
+    .replace(/\s*```[\s\S]*$/i, '')
+    .split(/\r?\n/)
+    .filter((line) => !line.startsWith('--- ') && !line.startsWith('+++ '));
+  const source = original.split(/\r?\n/);
+  const result: string[] = [];
+  let sourceIndex = 0;
+  let hunkFound = false;
+
+  for (let index = 0; index < content.length; index += 1) {
+    const hunk = content[index].match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (!hunk) continue;
+    hunkFound = true;
+    const start = Number(hunk[1]) - 1;
+    if (start < sourceIndex || start > source.length) return undefined;
+    result.push(...source.slice(sourceIndex, start));
+    sourceIndex = start;
+    for (index += 1; index < content.length && !content[index].startsWith('@@ '); index += 1) {
+      const line = content[index];
+      if (line === '\\ No newline at end of file') continue;
+      if (line.startsWith(' ')) {
+        if (source[sourceIndex] !== line.slice(1)) return undefined;
+        result.push(source[sourceIndex]);
+        sourceIndex += 1;
+      } else if (line.startsWith('-')) {
+        if (source[sourceIndex] !== line.slice(1)) return undefined;
+        sourceIndex += 1;
+      } else if (line.startsWith('+')) {
+        result.push(line.slice(1));
+      } else {
+        return undefined;
+      }
+    }
+    index -= 1;
+  }
+
+  if (!hunkFound) return undefined;
+  result.push(...source.slice(sourceIndex));
+  return result.join('\n');
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -143,8 +188,130 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     },
   );
+  const explainTraceback = vscode.commands.registerCommand(
+    'localdev-ai.explainTraceback',
+    async () => {
+      const raw = await vscode.window.showInputBox({
+        prompt: 'Paste a Python traceback',
+        ignoreFocusOut: true,
+      });
+      if (raw === undefined) {
+        return;
+      }
+      const traceback = parsePythonTraceback(raw);
+      if (!traceback) {
+        void vscode.window.showErrorMessage('The input is not a valid Python traceback.');
+        return;
+      }
+      const model = vscode.workspace.getConfiguration('localdev-ai').get<string>('selectedModel', '').trim();
+      if (!model) {
+        void vscode.window.showErrorMessage('No Ollama model is selected. Use “LocalDev AI: Select Ollama Model” first.');
+        return;
+      }
+      if (!engine) {
+        void vscode.window.showErrorMessage('The LocalDev AI engine is not running. Reload the extension and retry.');
+        return;
+      }
+      try {
+        const response = await engine.request('explain_traceback', {
+          ...ollamaOptions(),
+          model,
+          traceback,
+        });
+        if (!response || typeof response.message !== 'string') {
+          throw new Error('The engine returned an empty traceback explanation.');
+        }
+        const output = vscode.window.createOutputChannel('LocalDev AI Traceback Explanation');
+        output.clear();
+        output.appendLine(response.message);
+        output.show(true);
+      } catch (error) {
+        void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+      }
+    },
+  );
+  const proposePatch = vscode.commands.registerCommand(
+    'localdev-ai.proposePatch',
+    async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || editor.document.languageId !== 'python') {
+        void vscode.window.showInformationMessage('Open a Python file before requesting a patch.');
+        return;
+      }
+      const raw = await vscode.window.showInputBox({
+        prompt: 'Paste the Python traceback for this patch',
+        ignoreFocusOut: true,
+      });
+      if (raw === undefined) return;
+      const traceback = parsePythonTraceback(raw);
+      if (!traceback) {
+        void vscode.window.showErrorMessage('The input is not a valid Python traceback.');
+        return;
+      }
+      const model = vscode.workspace.getConfiguration('localdev-ai').get<string>('selectedModel', '').trim();
+      if (!model) {
+        void vscode.window.showErrorMessage('No Ollama model is selected. Use “LocalDev AI: Select Ollama Model” first.');
+        return;
+      }
+      if (!engine) {
+        void vscode.window.showErrorMessage('The LocalDev AI engine is not running. Reload the extension and retry.');
+        return;
+      }
+      try {
+        const documentUri = editor.document.uri;
+        const documentVersion = editor.document.version;
+        const original = editor.document.getText();
+        const response = await engine.request('propose_patch', {
+          ...ollamaOptions(),
+          model,
+          code: original,
+          traceback,
+        });
+        if (!response || typeof response.message !== 'string') {
+          throw new Error('The engine returned an empty patch proposal.');
+        }
+        const proposed = proposedSource(response.message, original);
+        if (proposed === undefined) {
+          throw new Error('The engine returned an invalid unified diff.');
+        }
+        const preview = await vscode.workspace.openTextDocument({
+          content: proposed,
+          language: 'python',
+        });
+        await vscode.commands.executeCommand(
+          'vscode.diff',
+          editor.document.uri,
+          preview.uri,
+          'LocalDev AI Patch Proposal',
+        );
+        const apply = 'Apply';
+        const reject = 'Reject';
+        const choice = await vscode.window.showInformationMessage(
+          'Apply this patch to the active Python file?',
+          { modal: true },
+          apply,
+          reject,
+        );
+        if (choice === apply && editor.document.uri.toString() === documentUri.toString()
+          && editor.document.version === documentVersion) {
+          const edit = new vscode.WorkspaceEdit();
+          const lastLine = editor.document.lineAt(editor.document.lineCount - 1);
+          edit.replace(
+            documentUri,
+            new vscode.Range(0, 0, editor.document.lineCount - 1, lastLine.text.length),
+            proposed,
+          );
+          if (!(await vscode.workspace.applyEdit(edit))) {
+            throw new Error('VS Code rejected the patch application.');
+          }
+        }
+      } catch (error) {
+        void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+      }
+    },
+  );
 
-  context.subscriptions.push(disposable, refreshModels, selectModel, explainCode);
+  context.subscriptions.push(disposable, refreshModels, selectModel, explainCode, explainTraceback, proposePatch);
 }
 
 export async function deactivate(): Promise<void> {

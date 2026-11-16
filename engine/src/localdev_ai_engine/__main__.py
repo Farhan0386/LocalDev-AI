@@ -13,7 +13,14 @@ from .status import health_status
 
 PROTOCOL_VERSION = "1"
 MAX_JSONL_MESSAGE_BYTES = 64 * 1024
-SUPPORTED_TASKS = {"check_setup", "discover_models", "select_model", "explain_code"}
+SUPPORTED_TASKS = {
+    "check_setup",
+    "discover_models",
+    "select_model",
+    "explain_code",
+    "explain_traceback",
+    "propose_patch",
+}
 SUPPORTED_LANGUAGE = "python"
 REQUEST_FIELDS = {
     "protocol_version",
@@ -23,6 +30,7 @@ REQUEST_FIELDS = {
     "language",
     "code",
     "question",
+    "traceback",
     "context",
     "options",
 }
@@ -92,7 +100,7 @@ def main() -> None:
             continue
 
         task = request.get("task")
-        if task == "explain_code":
+        if task in {"explain_code", "explain_traceback", "propose_patch"}:
             with active_lock:
                 if active is not None and active.thread is not None and active.thread.is_alive():
                     _error(request, "BUSY", "An explanation request is already active.", "Wait for it to finish or cancel it, then retry.", True, output_lock)
@@ -159,20 +167,27 @@ def _run_inference(active: ActiveInference, output_lock: Lock, active_lock: Lock
     request = active.request
     options = request.get("options")
     options = options if isinstance(options, dict) else {}
+    task = request.get("task")
     endpoint = options.get("ollama_endpoint", DEFAULT_OLLAMA_ENDPOINT)
     timeout = options.get("ollama_timeout_seconds", 5.0)
     model = options.get("model")
-    code = request.get("code")
+    code = request.get("code", options.get("code"))
     question = request.get("question", "")
+    traceback = request.get("traceback", options.get("traceback"))
+    hint_only = options.get("hint_only", False)
     try:
         if not isinstance(endpoint, str) or not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
             raise OllamaError("REQUEST_INVALID", "The Ollama settings are invalid.", "Update the endpoint and timeout settings, then retry.", False)
         if not isinstance(model, str) or not model.strip():
             raise OllamaError("MODEL_NOT_FOUND", "No Ollama model is selected.", "Select an installed model and retry.", False)
-        if not isinstance(code, str) or not code.strip():
+        if task in {"explain_code", "propose_patch"} and (not isinstance(code, str) or not code.strip()):
             raise OllamaError("REQUEST_INVALID", "No Python code was provided.", "Select Python code and try again.", False)
         if not isinstance(question, str):
             raise OllamaError("REQUEST_INVALID", "The explanation question must be text.", "Remove the invalid question and retry.", False)
+        if not isinstance(hint_only, bool):
+            raise OllamaError("REQUEST_INVALID", "The hint_only option must be boolean.", "Set hint_only to true or false and retry.", False)
+        if task in {"explain_traceback", "propose_patch"} and not isinstance(traceback, dict):
+            raise OllamaError("REQUEST_INVALID", "A parsed Python traceback is required.", "Provide a valid traceback and retry.", False)
         sequence = 0
 
         def emit_token(token: str) -> None:
@@ -199,11 +214,22 @@ def _run_inference(active: ActiveInference, output_lock: Lock, active_lock: Lock
                 except (AttributeError, OSError):
                     pass
 
-        explanation = OllamaClient(endpoint, float(timeout)).explain_code_stream(
-            model, code, question, emit_token, active.cancel_event, stream_opened
-        )
+        client = OllamaClient(endpoint, float(timeout))
+        if task == "explain_code":
+            if hint_only:
+                explanation = client.explain_code_stream(
+                    model, code, question, emit_token, active.cancel_event, stream_opened, True
+                )
+            else:
+                explanation = client.explain_code_stream(
+                    model, code, question, emit_token, active.cancel_event, stream_opened
+                )
+        elif task == "explain_traceback":
+            explanation = client.explain_traceback(model, traceback, hint_only)
+        else:
+            explanation = client.propose_patch(model, code, traceback, hint_only)
         if not active.cancel_event.is_set():
-            _finish(active, lambda: _respond(request, "explain_code", explanation, output_lock), active_lock)
+            _finish(active, lambda: _respond(request, task, explanation, output_lock), active_lock)
     except OllamaError as error:
         if active.cancel_event.is_set() or error.code == "REQUEST_CANCELLED":
             _finish(
@@ -318,6 +344,21 @@ def _validate_message(request: dict[str, object]) -> tuple[str, str, str] | None
             "The request context must be an object.",
             "Send context as a JSON object and retry.",
         )
+    options = request.get("options")
+    if task in {"explain_traceback", "propose_patch"}:
+        if not isinstance(options, dict) or not isinstance(options.get("traceback"), dict):
+            return (
+                "REQUEST_INVALID",
+                "A parsed Python traceback is required.",
+                "Provide a valid traceback and retry.",
+            )
+    if task == "propose_patch":
+        if not isinstance(options, dict) or not isinstance(options.get("code"), str) or not options["code"].strip():
+            return (
+                "REQUEST_INVALID",
+                "No Python code was provided.",
+                "Open a Python file and retry.",
+            )
     if task == "explain_code":
         if request.get("language") != SUPPORTED_LANGUAGE:
             return (

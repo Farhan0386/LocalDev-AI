@@ -222,7 +222,7 @@ class OllamaClient:
             "models": [model.as_dict() for model in models],
         }
 
-    def explain_code(self, model: str, code: str, question: str = "") -> str:
+    def explain_code(self, model: str, code: str, question: str = "", hint_only: bool = False) -> str:
         """Ask an installed Ollama model for a focused Python explanation."""
 
         if not code.strip():
@@ -232,15 +232,60 @@ class OllamaClient:
                 "Select Python code and try again.",
                 retryable=False,
             )
-        models = self.models()
-        if not any(item.name == model for item in models):
+        return self._chat(model, self._explanation_prompt(code, question, hint_only))
+
+    def explain_traceback(
+        self,
+        model: str,
+        traceback: dict[str, Any],
+        hint_only: bool = False,
+    ) -> str:
+        prompt = (
+            "Explain this Python traceback for a learner. Identify the failing "
+            "frame, likely cause, and next debugging step. Do not modify files.\n\n"
+            f"Traceback:\n{json.dumps(traceback, indent=2)}"
+        )
+        return self._chat(model, self._hint_prompt(prompt, hint_only))
+
+    def propose_patch(
+        self,
+        model: str,
+        code: str,
+        traceback: dict[str, Any],
+        hint_only: bool = False,
+    ) -> str:
+        if not code.strip():
+            raise OllamaError(
+                "REQUEST_INVALID",
+                "No Python code was provided.",
+                "Open a Python file and retry.",
+                retryable=False,
+            )
+        prompt = (
+            "Propose the smallest safe fix for this Python source and traceback. "
+            "Return only a unified diff inside one ```diff block. Do not write or "
+            "apply files and do not include unrelated formatting changes.\n\n"
+            f"Traceback:\n{json.dumps(traceback, indent=2)}\n\n"
+            f"Python source:\n```python\n{code}\n```"
+        )
+        result = self._chat(model, self._hint_prompt(prompt, hint_only))
+        if not result.startswith("```diff") or not result.rstrip().endswith("```"):
+            raise OllamaError(
+                "INVALID_PATCH",
+                "The model returned an invalid patch proposal.",
+                "Retry the patch proposal.",
+                retryable=True,
+            )
+        return result.strip()
+
+    def _chat(self, model: str, prompt: str) -> str:
+        if not any(item.name == model for item in self.models()):
             raise OllamaError(
                 "MODEL_NOT_FOUND",
                 "The selected Ollama model is not installed.",
                 "Refresh models and choose an installed model.",
                 retryable=False,
             )
-        prompt = self._explanation_prompt(code, question)
         response = self._post_json(
             "/api/chat",
             {
@@ -255,7 +300,7 @@ class OllamaClient:
             raise OllamaError(
                 "OLLAMA_INVALID_RESPONSE",
                 "Ollama returned no explanation text.",
-                "Retry the explanation request or check the selected model.",
+                "Retry the request or check the selected model.",
                 retryable=False,
             )
         return content.strip()
@@ -268,6 +313,7 @@ class OllamaClient:
         on_token: Callable[[str], None] | None = None,
         cancel_event: Event | None = None,
         on_stream_open: Callable[[Any], None] | None = None,
+        hint_only: bool = False,
     ) -> str:
         """Stream a Python explanation and return the complete text."""
 
@@ -289,7 +335,7 @@ class OllamaClient:
             f"{self.endpoint}/api/chat",
             data=json.dumps({
                 "model": model,
-                "messages": [{"role": "user", "content": self._explanation_prompt(code, question)}],
+                "messages": [{"role": "user", "content": self._explanation_prompt(code, question, hint_only)}],
                 "stream": True,
             }).encode("utf-8"),
             headers={"Content-Type": "application/json"},
@@ -453,16 +499,23 @@ class OllamaClient:
         return result
 
     @staticmethod
-    def _explanation_prompt(code: str, question: str) -> str:
+    def _explanation_prompt(code: str, question: str, hint_only: bool = False) -> str:
         prompt = (
             "Explain the following Python code for a learner. Cover what it does, "
             "how the important parts work, important functions, variables, and "
             "logic, and potential errors or issues only when clearly identifiable. "
             "Do not rewrite, modify, or execute the code."
         )
+        prompt = OllamaClient._hint_prompt(prompt, hint_only)
         if question.strip():
             prompt += f"\n\nUser question:\n{question.strip()}"
         prompt += f"\n\nPython code:\n```python\n{code}\n```"
+        return prompt
+
+    @staticmethod
+    def _hint_prompt(prompt: str, hint_only: bool) -> str:
+        if hint_only:
+            return f"{prompt}\n\nGive hints and guiding questions first. Do not reveal the complete answer."
         return prompt
 
 

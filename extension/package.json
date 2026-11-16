@@ -32,6 +32,14 @@
       {
         "command": "localdev-ai.explainCode",
         "title": "LocalDev AI: Explain Selected Python Code"
+      },
+      {
+        "command": "localdev-ai.explainTraceback",
+        "title": "LocalDev AI: Explain Python Traceback"
+      },
+      {
+        "command": "localdev-ai.proposePatch",
+        "title": "LocalDev AI: Propose Minimal Python Patch"
       }
     ]
   },
@@ -53,6 +61,11 @@
         "type": "string",
         "default": "",
         "description": "Installed Ollama model selected for future inference."
+      },
+      "localdev-ai.hintOnly": {
+        "type": "boolean",
+        "default": false,
+        "description": "Ask the local model to provide hints before complete answers."
       }
     }
   },

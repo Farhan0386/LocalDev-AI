@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: localdev-ai-engine
+Version: 0.1.0
+Summary: LocalDev AI Python engine foundation.
+Requires-Python: >=3.12
+Provides-Extra: test
+Requires-Dist: pytest>=7.4; extra == "test"
