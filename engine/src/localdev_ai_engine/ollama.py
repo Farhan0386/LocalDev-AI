@@ -79,6 +79,7 @@ class OllamaClient:
         self.first_token_timeout_seconds = first_token_timeout_seconds
         self.inactivity_timeout_seconds = inactivity_timeout_seconds
         self.max_request_duration_seconds = max_request_duration_seconds
+        self.last_stats: dict[str, Any] = {}
 
     def _get_json(self, path: str) -> dict[str, Any]:
         request = Request(f"{self.endpoint}{path}", method="GET")
@@ -425,6 +426,89 @@ class OllamaClient:
             raise OllamaError("OLLAMA_UNAVAILABLE", f"Ollama model pull failed: {error}", "Check network connection and Ollama service, then retry.") from error
         return f"Model '{name}' pulled successfully."
 
+    def copy_model(self, source: str, destination: str) -> dict[str, Any]:
+        """Copy or duplicate a local model in Ollama."""
+        source = source.strip()
+        destination = destination.strip()
+        if not source or not destination:
+            raise OllamaError("REQUEST_INVALID", "Source and destination model names are required.", "Provide valid model names and retry.", retryable=False)
+        self._post_json("/api/copy", {"source": source, "destination": destination})
+        return {"status": "success", "source": source, "destination": destination}
+
+    def delete_model(self, name: str) -> dict[str, Any]:
+        """Delete an installed model from Ollama."""
+        name = name.strip()
+        if not name:
+            raise OllamaError("REQUEST_INVALID", "Model name is required for deletion.", "Provide a model name and retry.", retryable=False)
+        request = Request(
+            f"{self.endpoint}/api/delete",
+            data=json.dumps({"name": name}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="DELETE",
+        )
+        try:
+            with self._opener(request, timeout=self.timeout_seconds) as response:
+                status = getattr(response, "status", 200)
+                if status < 200 or status >= 300:
+                    raise OllamaError("OLLAMA_HTTP_ERROR", f"Failed to delete model '{name}'.", "Check the model name and retry.")
+        except OllamaError:
+            raise
+        except (HTTPError, URLError, TimeoutError, OSError) as error:
+            raise OllamaError("OLLAMA_UNAVAILABLE", f"Ollama model deletion failed: {error}", "Check Ollama status and retry.") from error
+        return {"status": "success", "model": name}
+
+    def inline_complete(
+        self,
+        model: str,
+        prefix: str,
+        suffix: str,
+        max_tokens: int = 64,
+        temperature: float = 0.1,
+        cancel_event: Event | None = None,
+    ) -> str:
+        """Fast Fill-In-the-Middle (FIM) code completion for ghost-text suggestions."""
+        if not any(item.name == model for item in self.models()):
+            raise OllamaError(
+                "MODEL_NOT_FOUND",
+                "The selected Ollama model is not installed.",
+                "Refresh models and choose an installed model.",
+                retryable=False,
+            )
+        prompt = f"<|fim_prefix|>{prefix}<|fim_suffix|>{suffix}<|fim_middle|>"
+        request = Request(
+            f"{self.endpoint}/api/generate",
+            data=json.dumps({
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "num_predict": max_tokens,
+                    "temperature": temperature,
+                    "stop": ["<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>", "<|endoftext|>", "<|file_separator|>", "\n\n"],
+                },
+                "keep_alive": "5m",
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with self._opener(request, timeout=self.timeout_seconds) as response:
+                status = getattr(response, "status", 200)
+                if status < 200 or status >= 300:
+                    raise OllamaError("OLLAMA_HTTP_ERROR", "Ollama rejected completion request.", "Check Ollama status and retry.")
+                payload = json.loads(response.read().decode("utf-8"))
+        except OllamaError:
+            raise
+        except (HTTPError, URLError, TimeoutError, OSError) as error:
+            if cancel_event and cancel_event.is_set():
+                raise OllamaError("REQUEST_CANCELLED", "Inline completion was cancelled.", "Keep typing or retry.", retryable=False) from error
+            raise OllamaError("OLLAMA_UNAVAILABLE", "Ollama is not reachable for inline completion.", "Start Ollama and retry.") from error
+
+        response_text = payload.get("response", "")
+        for marker in ("<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>", "<|endoftext|>", "<|file_separator|>"):
+            response_text = response_text.replace(marker, "")
+        return response_text
+
     def _stream_chat_messages(
         self,
         model: str,
@@ -534,6 +618,24 @@ class OllamaClient:
                             on_token(content)
                     if chunk.get("done") is True:
                         completed = True
+                        eval_count = chunk.get("eval_count")
+                        eval_duration = chunk.get("eval_duration")
+                        prompt_eval_count = chunk.get("prompt_eval_count")
+                        prompt_eval_duration = chunk.get("prompt_eval_duration")
+                        load_duration = chunk.get("load_duration")
+                        total_duration = chunk.get("total_duration")
+                        tok_per_sec = round(eval_count / (eval_duration / 1e9), 1) if eval_count and eval_duration else 0.0
+                        ttft_ms = round((prompt_eval_duration + (load_duration or 0)) / 1e6, 1) if prompt_eval_duration is not None else 0.0
+                        self.last_stats = {
+                            "eval_count": eval_count or 0,
+                            "prompt_eval_count": prompt_eval_count or 0,
+                            "total_tokens": (prompt_eval_count or 0) + (eval_count or 0),
+                            "eval_duration_ms": round((eval_duration or 0) / 1e6, 1),
+                            "prompt_eval_duration_ms": round((prompt_eval_duration or 0) / 1e6, 1),
+                            "total_duration_ms": round((total_duration or 0) / 1e6, 1),
+                            "tokens_per_second": tok_per_sec,
+                            "ttft_ms": ttft_ms,
+                        }
                         break
         except OllamaError:
             raise

@@ -171,8 +171,59 @@ def estimate_model_fit(hardware: dict[str, Any], models: list[dict[str, Any]]) -
     return {"models": results, "guidance": guidance}
 
 
+def get_hardware_tiers(hardware: dict[str, Any]) -> dict[str, Any]:
+    """Return hardware tier categorization, max context budget, and recommended model sets."""
+    gpu = hardware.get("gpu", {})
+    memory = hardware.get("memory", {})
+    ram_bytes = memory.get("total_bytes") or memory.get("available_bytes") or 0
+    vram_bytes = gpu.get("vram_total_bytes") or gpu.get("vram_free_bytes") or 0
+    has_gpu = bool(gpu.get("present"))
+
+    ram_gib = ram_bytes / _BYTES_PER_GIB if isinstance(ram_bytes, (int, float)) and ram_bytes > 0 else 0.0
+    vram_gib = vram_bytes / _BYTES_PER_GIB if isinstance(vram_bytes, (int, float)) and vram_bytes > 0 else 0.0
+
+    if (has_gpu and vram_gib >= 7.5) or ram_gib >= 15.0:
+        tier = "performance"
+        max_context_chars = 8000
+        num_ctx = 8192
+    elif (has_gpu and vram_gib >= 3.5) or ram_gib >= 7.5:
+        tier = "standard"
+        max_context_chars = 4500
+        num_ctx = 4096
+    else:
+        tier = "ultra_light"
+        max_context_chars = 2500
+        num_ctx = 2048
+
+    return {
+        "tier": tier,
+        "max_context_chars": max_context_chars,
+        "num_ctx": num_ctx,
+        "ram_gib": round(ram_gib, 1),
+        "vram_gib": round(vram_gib, 1),
+        "tiers": {
+            "ultra_light": {
+                "label": "Ultra-Light (<4GB RAM)",
+                "models": ["qwen2.5-coder:0.5b", "qwen2.5-coder:1.5b"],
+                "description": "Minimal RAM usage, instant response on low-resource laptops.",
+            },
+            "standard": {
+                "label": "Standard (8GB RAM)",
+                "models": ["qwen2.5-coder:3b", "deepseek-coder:1.3b"],
+                "description": "Balanced coding reasoning and high accuracy.",
+            },
+            "performance": {
+                "label": "Performance (16GB+ RAM / GPU)",
+                "models": ["qwen2.5-coder:7b", "codellama:7b"],
+                "description": "Full capabilities, deep refactoring and multi-file reasoning.",
+            },
+        },
+    }
+
+
 def recommend_model(hardware: dict[str, Any]) -> dict[str, Any]:
     """Recommend the optimal coding model given detected RAM/GPU."""
+    tier_info = get_hardware_tiers(hardware)
     gpu = hardware.get("gpu", {})
     memory = hardware.get("memory", {})
     ram_bytes = memory.get("total_bytes") or memory.get("available_bytes") or 0
@@ -207,4 +258,8 @@ def recommend_model(hardware: dict[str, Any]) -> dict[str, Any]:
         "model": model,
         "reason": reason,
         "fit": fit,
+        "tier": tier_info["tier"],
+        "num_ctx": tier_info["num_ctx"],
+        "max_context_chars": tier_info["max_context_chars"],
+        "tiers": tier_info["tiers"],
     }

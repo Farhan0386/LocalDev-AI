@@ -9,7 +9,7 @@ from threading import Event, Lock, Thread
 from typing import Any, cast
 
 from .ollama import DEFAULT_OLLAMA_ENDPOINT, OllamaClient, OllamaError
-from .hardware import detect_hardware, estimate_model_fit, recommend_model
+from .hardware import detect_hardware, estimate_model_fit, recommend_model, get_hardware_tiers
 from .status import health_status
 
 PROTOCOL_VERSION = "1"
@@ -24,6 +24,9 @@ SUPPORTED_TASKS = {
     "hardware_diagnostics",
     "chat_session",
     "pull_model",
+    "copy_model",
+    "delete_model",
+    "inline_complete",
 }
 SUPPORTED_LANGUAGE = "python"
 REQUEST_FIELDS = {
@@ -42,6 +45,12 @@ REQUEST_FIELDS = {
     "workspace_context",
     "model",
     "name",
+    "source",
+    "destination",
+    "prefix",
+    "suffix",
+    "max_tokens",
+    "temperature",
 }
 
 
@@ -110,7 +119,7 @@ def main() -> None:
             continue
 
         task = request.get("task")
-        if task in {"explain_code", "explain_traceback", "propose_patch", "chat_session", "pull_model"}:
+        if task in {"explain_code", "explain_traceback", "propose_patch", "chat_session", "pull_model", "inline_complete"}:
             with active_lock:
                 if active is not None and active.thread is not None and active.thread.is_alive():
                     _error(request, "BUSY", "An explanation request is already active.", "Wait for it to finish or cancel it, then retry.", True, output_lock)
@@ -163,16 +172,39 @@ def main() -> None:
                 }
             fit = estimate_model_fit(hardware, models)
             recommendation = recommend_model(hardware)
+            tiers = get_hardware_tiers(hardware)
             message: dict[str, object] = {
                 "hardware": hardware,
                 "models": fit["models"],
                 "guidance": fit["guidance"],
                 "recommendation": recommendation,
+                "tiers": tiers,
             }
             if ollama_error:
                 message["ollama_error"] = ollama_error
                 message["guidance"] = [*fit["guidance"], ollama_error["action"]]
             _respond(request, task, message, output_lock)
+        elif task == "copy_model":
+            source = options.get("source") or request.get("source")
+            destination = options.get("destination") or request.get("destination")
+            if not isinstance(source, str) or not isinstance(destination, str):
+                _error(request, "REQUEST_INVALID", "Source and destination model names are required.", "Provide valid model names and retry.", False, output_lock)
+                continue
+            try:
+                result = OllamaClient(endpoint, float(timeout)).copy_model(source, destination)
+                _respond(request, task, result, output_lock)
+            except OllamaError as error:
+                _error(request, error.code, error.message, error.action, error.retryable, output_lock)
+        elif task == "delete_model":
+            model_name = options.get("model") or options.get("name") or request.get("model") or request.get("name")
+            if not isinstance(model_name, str):
+                _error(request, "REQUEST_INVALID", "Model name is required for deletion.", "Provide a model name and retry.", False, output_lock)
+                continue
+            try:
+                result = OllamaClient(endpoint, float(timeout)).delete_model(model_name)
+                _respond(request, task, result, output_lock)
+            except OllamaError as error:
+                _error(request, error.code, error.message, error.action, error.retryable, output_lock)
         else:
             _error(request, "REQUEST_INVALID", "This engine task is not implemented yet.", "Retry after the requested Phase 2 feature is available.", False, output_lock)
 
@@ -283,8 +315,30 @@ def _run_inference(active: ActiveInference, output_lock: Lock, active_lock: Lock
                 cancel_event=active.cancel_event,
                 on_stream_open=stream_opened,
             )
+        elif task == "inline_complete":
+            prefix = options.get("prefix") or request.get("prefix") or ""
+            suffix = options.get("suffix") or request.get("suffix") or ""
+            max_tokens = options.get("max_tokens") or request.get("max_tokens") or 64
+            temperature = options.get("temperature") or request.get("temperature") or 0.1
+            explanation = client.inline_complete(
+                model,
+                str(prefix),
+                str(suffix),
+                max_tokens=int(max_tokens),
+                temperature=float(temperature),
+                cancel_event=active.cancel_event,
+            )
+        stats = None
+        if task == "chat_session":
+            stats = dict(getattr(client, "last_stats", {}))
+            hw = detect_hardware()
+            mem = hw.get("memory", {})
+            stats["ram_available_bytes"] = mem.get("available_bytes")
+            gpu = hw.get("gpu", {})
+            if gpu.get("present"):
+                stats["vram_free_bytes"] = gpu.get("vram_free_bytes")
         if not active.cancel_event.is_set():
-            _finish(active, lambda: _respond(request, task, explanation, output_lock), active_lock)
+            _finish(active, lambda: _respond(request, task, explanation, output_lock, stats=stats), active_lock)
     except OllamaError as error:
         if active.cancel_event.is_set() or error.code == "REQUEST_CANCELLED":
             _finish(
@@ -448,12 +502,21 @@ def _validate_message(request: dict[str, object]) -> tuple[str, str, str] | None
     return None
 
 
-def _respond(request: dict[str, object], task: str, message: object, output_lock: Lock) -> None:
-    _write({
+def _respond(
+    request: dict[str, object],
+    task: str,
+    message: object,
+    output_lock: Lock,
+    stats: dict[str, object] | None = None,
+) -> None:
+    payload: dict[str, object] = {
         "protocol_version": PROTOCOL_VERSION, "type": "response",
         "request_id": request.get("request_id"), "status": "ok",
         "task": task, "message": message, "patch": None, "warnings": [],
-    }, output_lock)
+    }
+    if stats is not None:
+        payload["stats"] = stats
+    _write(payload, output_lock)
 
 
 def _error(

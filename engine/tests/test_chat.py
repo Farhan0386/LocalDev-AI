@@ -162,3 +162,77 @@ def test_main_protocol_handles_chat_session(monkeypatch, capsys):
     assert messages[2]["request_id"] == "chat-1"
     assert messages[2]["type"] == "response"
     assert messages[2]["message"] == "Here is a plan."
+
+
+def test_copy_and_delete_model():
+    requests = []
+
+    def opener(request, timeout):
+        requests.append(request)
+        if request.full_url.endswith("/api/copy"):
+            body = json.loads(request.data)
+            assert body["source"] == "source_mod"
+            assert body["destination"] == "dest_mod"
+            return FakeStreamResponse([b"{}"])
+        elif request.full_url.endswith("/api/delete"):
+            assert request.get_method() == "DELETE"
+            return FakeStreamResponse([b"{}"])
+        raise RuntimeError(f"Unexpected url: {request.full_url}")
+
+    client = OllamaClient("http://127.0.0.1:11434", opener=opener)
+    copy_res = client.copy_model("source_mod", "dest_mod")
+    assert copy_res["source"] == "source_mod"
+
+    del_res = client.delete_model("dest_mod")
+    assert del_res["status"] == "success"
+
+
+def test_inline_complete_generates_fim():
+    def opener(request, timeout):
+        if request.full_url.endswith("/api/tags"):
+            return FakeStreamResponse([json.dumps({"models": [{"name": "qwen2.5-coder:1.5b"}]})])
+        if request.full_url.endswith("/api/generate"):
+            body = json.loads(request.data)
+            assert "<|fim_prefix|>" in body["prompt"]
+            assert "def add(a, b):" in body["prompt"]
+            assert body["options"]["num_predict"] == 32
+            return FakeStreamResponse([json.dumps({"response": "    return a + b\n"})])
+        raise RuntimeError(f"Unexpected url: {request.full_url}")
+
+    client = OllamaClient("http://127.0.0.1:11434", opener=opener)
+    res = client.inline_complete(
+        "qwen2.5-coder:1.5b",
+        prefix="def add(a, b):\n",
+        suffix="\nprint(add(1, 2))",
+        max_tokens=32,
+    )
+    assert res == "    return a + b\n"
+
+
+def test_streaming_stats_collection():
+    tokens = [
+        json.dumps({"message": {"content": "Hello"}, "done": False}).encode(),
+        json.dumps({
+            "message": {"content": " world"},
+            "done": True,
+            "eval_count": 20,
+            "eval_duration": 1_000_000_000,
+            "prompt_eval_count": 10,
+            "prompt_eval_duration": 150_000_000,
+            "load_duration": 50_000_000,
+            "total_duration": 1_200_000_000,
+        }).encode(),
+    ]
+
+    def opener(request, timeout):
+        if request.full_url.endswith("/api/tags"):
+            return FakeStreamResponse([json.dumps({"models": [{"name": "model"}]})])
+        return FakeStreamResponse(tokens)
+
+    client = OllamaClient("http://127.0.0.1:11434", opener=opener)
+    client.explain_code_stream("model", "print(1)")
+    stats = client.last_stats
+    assert stats["eval_count"] == 20
+    assert stats["prompt_eval_count"] == 10
+    assert stats["tokens_per_second"] == 20.0
+    assert stats["ttft_ms"] == 200.0

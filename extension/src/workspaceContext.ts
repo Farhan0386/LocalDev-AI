@@ -96,16 +96,56 @@ export async function collectDirectoryTree(maxFiles = 60): Promise<string> {
 }
 
 /**
+ * Reliably resolves a file path or partial filename to an existing workspace Uri.
+ */
+export async function resolveWorkspaceFile(target: string): Promise<vscode.Uri | undefined> {
+  const clean = target.replace(/^@/, '').trim().replace(/\\/g, '/');
+  if (!clean) return undefined;
+
+  // 1. Direct match
+  try {
+    const direct = await vscode.workspace.findFiles(clean, DEFAULT_EXCLUDE_GLOB, 1);
+    if (direct.length > 0) return direct[0];
+  } catch {}
+
+  // 2. Recursive path match
+  try {
+    const recursive = await vscode.workspace.findFiles(`**/${clean}`, DEFAULT_EXCLUDE_GLOB, 1);
+    if (recursive.length > 0) return recursive[0];
+  } catch {}
+
+  // 3. Match by basename
+  const base = path.basename(clean);
+  try {
+    const byBase = await vscode.workspace.findFiles(`**/${base}`, DEFAULT_EXCLUDE_GLOB, 1);
+    if (byBase.length > 0) return byBase[0];
+  } catch {}
+
+  // 4. Fuzzy fallback match by substring
+  try {
+    const fuzzy = await vscode.workspace.findFiles(`**/*${base}*`, DEFAULT_EXCLUDE_GLOB, 5);
+    if (fuzzy.length > 0) {
+      // Prioritize exact basename match if present
+      const exact = fuzzy.find((u) => path.basename(u.fsPath).toLowerCase() === base.toLowerCase());
+      return exact || fuzzy[0];
+    }
+  } catch {}
+
+  return undefined;
+}
+
+/**
  * Scans prompt text for @filename mentions and retrieves their content.
  */
 export async function collectReferencedFiles(
   prompt: string,
   explicitPaths: string[] = [],
+  maxFileChars = MAX_FILE_CHARS,
 ): Promise<ReferencedFile[]> {
   const results: ReferencedFile[] = [];
   const mentioned = new Set<string>(explicitPaths);
 
-  // Match @filename patterns like @src/index.ts or @app.py
+  // Match @filename patterns like @src/index.ts or @app.py or @main.py
   const regex = /@([a-zA-Z0-9_\-./\\]+)/g;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(prompt)) !== null) {
@@ -117,26 +157,17 @@ export async function collectReferencedFiles(
 
   for (const name of mentioned) {
     try {
-      const found = await vscode.workspace.findFiles(`**/${name}`, DEFAULT_EXCLUDE_GLOB, 1);
-      if (found.length === 0) {
-        // Try searching by exact name or substring
-        const fallback = await vscode.workspace.findFiles(`*${name}*`, DEFAULT_EXCLUDE_GLOB, 1);
-        if (fallback.length > 0) {
-          found.push(fallback[0]);
-        }
-      }
-
-      if (found.length > 0) {
-        const uri = found[0];
+      const uri = await resolveWorkspaceFile(name);
+      if (uri) {
         const bytes = await vscode.workspace.fs.readFile(uri);
         const content = Buffer.from(bytes).toString('utf-8');
         results.push({
           path: vscode.workspace.asRelativePath(uri),
-          content: truncateText(content, MAX_FILE_LINES, MAX_FILE_CHARS),
+          content: truncateText(content, MAX_FILE_LINES, maxFileChars),
         });
       }
     } catch {
-      // Ignore unreadable or missing files
+      // Ignore unreadable files
     }
   }
 
@@ -165,8 +196,12 @@ export async function buildWorkspaceContext(
     includeWorkspaceTree?: boolean;
     explicitFilePaths?: string[];
     includeActiveEditor?: boolean;
+    maxBudgetChars?: number;
   } = {},
 ): Promise<WorkspaceContextData> {
+  const budget = options.maxBudgetChars || 6000;
+  const maxPerFile = Math.min(MAX_FILE_CHARS, Math.max(1000, Math.floor(budget / 2)));
+
   const context: WorkspaceContextData = {
     referenced_files: [],
   };
@@ -179,7 +214,7 @@ export async function buildWorkspaceContext(
     context.directory_tree = await collectDirectoryTree();
   }
 
-  context.referenced_files = await collectReferencedFiles(prompt, options.explicitFilePaths || []);
+  context.referenced_files = await collectReferencedFiles(prompt, options.explicitFilePaths || [], maxPerFile);
 
   return context;
 }

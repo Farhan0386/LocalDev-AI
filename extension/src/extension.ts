@@ -4,6 +4,7 @@ import { PythonEngine } from './pythonEngine';
 import { parsePythonTraceback } from './tracebackParser';
 import { ChatViewProvider } from './chatViewProvider';
 import { applyUnifiedDiff } from './diffUtils';
+import { LocalDevInlineCompletionProvider } from './inlineCompletion';
 
 let engine: PythonEngine | undefined;
 
@@ -356,7 +357,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
   );
 
-  const chatProvider = new ChatViewProvider(context.extensionUri, () => engine);
+  const inlineCompletionProvider = new LocalDevInlineCompletionProvider(() => engine);
+  const inlineCompletionDisposable = vscode.languages.registerInlineCompletionItemProvider(
+    { pattern: '**' },
+    inlineCompletionProvider,
+  );
+
+  const toggleAutocomplete = vscode.commands.registerCommand('localdev-ai.toggleAutocomplete', () => {
+    const next = !inlineCompletionProvider.isEnabled();
+    inlineCompletionProvider.setEnabled(next);
+    void vscode.window.showInformationMessage(`LocalDev AI: Tab Autocomplete ${next ? 'Enabled' : 'Disabled'}`);
+  });
+
+  const chatProvider = new ChatViewProvider(context, () => engine, inlineCompletionProvider);
   const chatViewDisposable = vscode.window.registerWebviewViewProvider(
     ChatViewProvider.viewType,
     chatProvider,
@@ -382,6 +395,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     chatViewDisposable,
     openChat,
     newChat,
+    inlineCompletionDisposable,
+    toggleAutocomplete,
   );
 }
 
