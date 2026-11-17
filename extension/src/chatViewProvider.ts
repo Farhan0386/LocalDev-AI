@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
-import * as path from 'node:path';
+import * as path from 'path';
 import { exec } from 'node:child_process';
+import * as process from 'node:process';
+import { setTimeout } from 'node:timers';
 import { PythonEngine } from './pythonEngine';
 import { applyUnifiedDiff } from './diffUtils';
 import {
@@ -141,6 +143,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._createNewSession('New Chat');
       }
     }
+
   }
 
   private async _saveSessions(): Promise<void> {
@@ -1059,14 +1062,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       background: var(--card-bg);
       border-bottom: 1px solid var(--card-border);
       font-size: 11px;
+      padding: 6px 8px 0;
     }
 
     .top-row {
       display: flex;
       align-items: center;
-      gap: 6px;
-      padding: 6px 10px;
+      gap: 5px;
+      padding: 0 2px 6px;
     }
+
+    .top-row.secondary {
+      padding-top: 5px;
+      padding-bottom: 6px;
+      border-top: 1px solid rgba(255,255,255,0.05);
+    }
+
+    .brand-badge { font-weight: 700; letter-spacing: .2px; color: var(--fg); white-space: nowrap; }
+    .brand-mark { color: var(--accent); margin-right: 3px; }
 
     .status-pill {
       display: flex;
@@ -1105,6 +1118,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       gap: 4px;
     }
 
+    #history-btn { margin-left: auto; }
+
     select.model-select {
       background: var(--input-bg);
       color: var(--fg);
@@ -1120,10 +1135,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       display: flex;
       align-items: center;
       gap: 6px;
-      padding: 4px 10px 6px 10px;
+      padding: 4px 2px 6px;
       background: rgba(0,0,0,0.15);
       border-top: 1px solid rgba(255,255,255,0.03);
     }
+
+    .session-row.collapsed { display: none; }
 
     select.session-select {
       flex: 1;
@@ -1156,10 +1173,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       align-items: center;
       justify-content: space-between;
       padding: 3px 10px;
-      background: rgba(0,0,0,0.25);
+      background: transparent;
       font-size: 10px;
       color: #8b949e;
-      border-bottom: 1px solid var(--card-border);
+      border-top: 1px solid rgba(255,255,255,0.06);
+      margin: 0 10px;
+      padding: 5px 2px 4px;
+      flex: 0 0 auto;
     }
 
     /* Model Manager Drawer */
@@ -1236,19 +1256,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     #chat-stream {
       flex: 1;
       overflow-y: auto;
-      padding: 10px;
+      padding: 14px 12px 8px;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 14px;
     }
 
-    .chat-message { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
-    .chat-bubble { padding: 8px 12px; border-radius: 6px; line-height: 1.45; word-break: break-word; font-size: 12px; }
-    .user-message .chat-bubble { background: rgba(88, 166, 255, 0.12); border: 1px solid rgba(88, 166, 255, 0.25); align-self: flex-end; }
+    .chat-message { display: flex; flex-direction: column; gap: 5px; max-width: 100%; }
+    .chat-bubble { padding: 10px 12px; border-radius: 8px; line-height: 1.55; word-break: break-word; font-size: 13px; }
+    .chat-bubble p { margin: 0 0 9px; }
+    .chat-bubble p:last-child { margin-bottom: 0; }
+    .chat-bubble ul, .chat-bubble ol { margin: 6px 0 10px 18px; padding: 0; }
+    .user-message { align-items: flex-end; }
+    .user-message .chat-bubble { background: var(--input-bg); border: 1px solid var(--input-border); max-width: 88%; }
     .assistant-message .chat-bubble { background: var(--card-bg); border: 1px solid var(--card-border); align-self: flex-start; width: 100%; }
     .system-message .chat-bubble { background: rgba(255,255,255,0.04); border: 1px dashed rgba(255,255,255,0.15); font-size: 11px; color: #8b949e; }
 
-    .msg-header { font-size: 10px; color: rgba(255,255,255,0.5); font-weight: 600; text-transform: uppercase; }
+    .msg-header { font-size: 10px; color: rgba(255,255,255,0.58); font-weight: 600; letter-spacing: .3px; }
     .msg-stats { font-size: 9px; color: #8b949e; margin-top: 4px; display: inline-flex; align-items: center; gap: 6px; }
 
     /* Code Blocks */
@@ -1256,7 +1280,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       margin: 8px 0;
       background: var(--code-bg);
       border: 1px solid var(--card-border);
-      border-radius: 4px;
+      border-radius: 7px;
       overflow: hidden;
       font-family: var(--vscode-editor-font-family, Consolas, monospace);
     }
@@ -1264,7 +1288,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 3px 8px;
+      padding: 5px 8px;
+      position: sticky;
+      top: 0;
       background: rgba(255,255,255,0.03);
       border-bottom: 1px solid rgba(255,255,255,0.05);
       font-size: 10px;
@@ -1276,7 +1302,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       color: var(--fg);
       border-radius: 3px;
       font-size: 9px;
-      padding: 1px 5px;
+      padding: 3px 6px;
       cursor: pointer;
     }
     .code-btn:hover { background: rgba(255,255,255,0.1); }
@@ -1288,7 +1314,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       border: 1px solid var(--card-border);
       border-left: 3px solid var(--accent);
       background: rgba(0,0,0,0.25);
-      border-radius: 4px;
+      border-radius: 7px;
       padding: 8px;
       display: flex;
       flex-direction: column;
@@ -1306,16 +1332,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     .diff-line-del { color: #f85149; background: rgba(248, 81, 73, 0.15); display: block; }
     .diff-line-info { color: #79c0ff; display: block; }
     .crud-actions { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+    .crud-card details { margin-top: 2px; }
+    .crud-card summary { cursor: pointer; color: var(--accent); font-size: 10px; user-select: none; }
 
     /* Bottom Input Bar */
     #bottom-bar {
-      padding: 8px 10px;
+      padding: 8px 10px 10px;
       background: var(--card-bg);
       border-top: 1px solid var(--card-border);
       display: flex;
       flex-direction: column;
       gap: 6px;
     }
+    .composer { border: 1px solid var(--input-border); border-radius: 10px; padding: 7px; background: var(--input-bg); }
+    .composer:focus-within { border-color: var(--vscode-focusBorder, var(--accent)); box-shadow: 0 0 0 1px var(--vscode-focusBorder, var(--accent)); }
     .context-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; font-size: 10px; }
     .chip {
       background: rgba(255,255,255,0.08);
@@ -1332,7 +1362,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     .chip .chip-remove { font-weight: bold; cursor: pointer; }
 
     .toggle-pill {
-      margin-left: auto;
       display: inline-flex;
       align-items: center;
       gap: 4px;
@@ -1359,10 +1388,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       display: flex;
       align-items: flex-end;
       gap: 6px;
-      background: var(--input-bg);
-      border: 1px solid var(--input-border);
+      background: transparent;
+      border: 0;
       border-radius: 6px;
-      padding: 4px 6px;
+      padding: 4px 0 0;
     }
     textarea#prompt-input {
       flex: 1;
@@ -1379,41 +1408,48 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     #send-btn, #stop-btn { padding: 4px 8px; font-size: 11px; }
     #stop-btn { display: none; background: #da3633; }
+    .empty-state { margin: auto; max-width: 340px; text-align: center; padding: 22px 10px; color: #aab4c0; }
+    .empty-state h2 { color: var(--fg); font-size: 18px; margin-bottom: 6px; }
+    .empty-state p { line-height: 1.45; font-size: 12px; margin-bottom: 12px; }
+    .starter-prompts { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+    .starter-chip { border: 1px solid var(--card-border); background: var(--input-bg); color: var(--fg); border-radius: 14px; padding: 6px 9px; cursor: pointer; font-size: 11px; }
+    .starter-chip:hover { border-color: var(--accent); color: var(--accent); }
   </style>
 </head>
 <body>
   <!-- Top Bar -->
   <div id="top-bar">
     <div class="top-row">
+      <div class="brand-badge"><span class="brand-mark">◈</span>LocalDev AI</div>
       <div class="status-pill" id="status-pill" title="Ollama Status">
         <div id="status-dot" class="status-dot"></div>
         <span id="status-text">Checking</span>
       </div>
       <div id="fit-badge" class="fit-badge" style="display:none;">Fit</div>
+      <button id="new-chat-btn" class="icon-btn" title="New Chat Session">＋ New Chat</button>
+      <button id="history-btn" class="icon-btn" title="Chat History">▾ History</button>
+      <button id="models-drawer-btn" class="icon-btn" title="Model Manager (Pull, Copy, Delete, Tiers)">⚙ Models</button>
+    </div>
+
+    <div class="top-row secondary">
       <div class="model-actions-wrap">
         <select id="model-select" class="model-select" title="Active Model">
           <option value="">No model</option>
         </select>
-        <button id="models-drawer-btn" class="icon-btn" title="Model Manager (Pull, Copy, Delete, Tiers)">⚙</button>
         <button id="stop-ollama-btn" class="icon-btn" title="Stop Ollama (Free RAM)">⏹</button>
         <button id="start-ollama-btn" class="icon-btn" title="Start Ollama">▶</button>
+        <div id="autocomplete-toggle" class="toggle-pill on" title="Toggle Tab Autocomplete Suggestions">
+          ⚡ Tab: <span id="autocomplete-state">ON</span>
+        </div>
       </div>
     </div>
 
     <!-- Session Management Row -->
-    <div class="session-row">
+    <div class="session-row collapsed" id="session-row">
       <select id="session-select" class="session-select" title="Chat Session History"></select>
-      <button id="new-chat-btn" class="icon-btn" title="New Chat Session">+ New</button>
       <button id="rename-chat-btn" class="icon-btn" title="Rename Current Chat">✏</button>
       <button id="delete-chat-btn" class="icon-btn" title="Delete Current Chat">🗑</button>
     </div>
-  </div>
-
-  <!-- Telemetry Bar -->
-  <div id="telemetry-bar">
-    <span id="telemetry-speed">⚡ Idle</span>
-    <span id="telemetry-ttft">⏱ TTFT: --</span>
-    <span id="telemetry-ram">🧠 RAM: --</span>
   </div>
 
   <!-- Model Manager Drawer -->
@@ -1466,9 +1502,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   <!-- Chat Stream -->
   <div id="chat-stream"></div>
+  <!-- Footer telemetry stays close to the latest response. -->
+  <div id="telemetry-bar">
+    <span id="telemetry-speed">⚡ Idle</span>
+    <span id="telemetry-ttft">⏱ TTFT: --</span>
+    <span id="telemetry-ram">🧠 RAM: --</span>
+  </div>
 
   <!-- Bottom Input Bar -->
   <div id="bottom-bar">
+   <div class="composer">
     <div class="context-bar">
       <span id="active-file-chip" class="chip" style="display:none;">
         <span id="active-file-label">📄 file</span>
@@ -1476,12 +1519,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <button id="attach-file-btn" class="chip" title="Attach file to context">+ @file</button>
       <button id="toggle-workspace-btn" class="chip" title="Include directory outline">+ @workspace</button>
       
-      <div id="autocomplete-toggle" class="toggle-pill on" title="Toggle Tab Autocomplete Suggestions">
-        ⚡ Tab Complete: <span id="autocomplete-state">ON</span>
-      </div>
-
       <div class="mode-toggle">
-        <button id="mode-learn-btn" class="mode-btn active" title="Learn & Explain mode">💡 Learn</button>
+        <button id="mode-learn-btn" class="mode-btn active" title="Ask & Explain mode">💡 Ask</button>
         <button id="mode-edit-btn" class="mode-btn" title="Edit & CRUD mode">🛠 Edit</button>
       </div>
     </div>
@@ -1491,6 +1530,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <button id="send-btn" class="btn">Send</button>
       <button id="stop-btn" class="btn">Stop</button>
     </div>
+   </div>
   </div>
 
   <script nonce="${nonce}">
@@ -1501,6 +1541,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const statusText = document.getElementById('status-text');
     const fitBadge = document.getElementById('fit-badge');
     const modelSelect = document.getElementById('model-select');
+    const historyBtn = document.getElementById('history-btn');
+    const sessionRow = document.getElementById('session-row');
     const modelsDrawerBtn = document.getElementById('models-drawer-btn');
     const modelManagerDrawer = document.getElementById('model-manager-drawer');
     const closeDrawerBtn = document.getElementById('close-drawer-btn');
@@ -1659,6 +1701,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       vscode.postMessage({ type: 'newSession' });
     });
 
+    historyBtn.addEventListener('click', () => {
+      const collapsed = sessionRow.classList.toggle('collapsed');
+      historyBtn.classList.toggle('active', !collapsed);
+    });
+
     renameChatBtn.addEventListener('click', () => {
       const currentTitle = sessionSelect.options[sessionSelect.selectedIndex]?.text || '';
       const newTitle = prompt('Rename this session:', currentTitle);
@@ -1757,8 +1804,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       if (!session.messages || session.messages.length === 0) {
         const welcome = document.createElement('div');
-        welcome.className = 'chat-message assistant-message';
-        welcome.innerHTML = '<div class="msg-header">LocalDev AI</div><div class="chat-bubble">👋 Ready for private, local development. Ask questions or type @filename to inspect code.</div>';
+        welcome.className = 'empty-state';
+        const fit = msgFitSummary();
+        welcome.innerHTML = '<h2>👋 Welcome to LocalDev AI</h2>' +
+          '<p>Private, local development help powered by Ollama.' + fit + '</p>' +
+          '<div class="starter-prompts">' +
+          '<button class="starter-chip" data-prompt="Explain the active file">Explain active file</button>' +
+          '<button class="starter-chip" data-prompt="Find bugs in the current selection">Find bugs in selection</button>' +
+          '<button class="starter-chip" data-prompt="Summarize the workspace">Summarize workspace</button>' +
+          '</div>';
+        welcome.querySelectorAll('.starter-chip').forEach(chip => {
+          chip.addEventListener('click', () => {
+            promptInput.value = chip.getAttribute('data-prompt') || '';
+            promptInput.focus();
+            promptInput.dispatchEvent(new Event('input'));
+          });
+        });
         chatStream.appendChild(welcome);
         return;
       }
@@ -1770,6 +1831,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Onboarding UI Rendering
     function renderOnboarding(state, models, selectedModel) {
+      window.lastOnboardingState = state;
       modelSelect.innerHTML = '';
       if (models && models.length > 0) {
         models.forEach(m => {
@@ -1854,6 +1916,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           fitBadge.style.display = 'inline-block';
           fitBadge.textContent = 'Fit: ' + state.recommendation.fit;
         }
+      }
+
+      function msgFitSummary() {
+        const rec = window.lastOnboardingState?.recommendation;
+        return rec?.fit ? ' Hardware fit: <strong>' + escapeHtml(rec.fit) + '</strong>.' : '';
       }
     }
 
@@ -1941,13 +2008,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       bubble.className = 'chat-bubble';
       bubble.innerHTML = renderMarkdown(msg.content);
 
-      if (msg.stats) {
-        const statsEl = document.createElement('div');
-        statsEl.className = 'msg-stats';
-        statsEl.innerHTML = '⚡ ' + (msg.stats.tokens_per_second || 0) + ' tok/s · TTFT ' + (msg.stats.ttft_ms || 0) + 'ms · ' + (msg.stats.eval_count || 0) + ' tokens';
-        bubble.appendChild(statsEl);
-      }
-
       msgEl.appendChild(header);
       msgEl.appendChild(bubble);
       chatStream.appendChild(msgEl);
@@ -2020,13 +2080,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           bubble.innerHTML = renderMarkdown(content);
           attachCodeButtons(bubble);
 
-          if (stats) {
-            const statsEl = document.createElement('div');
-            statsEl.className = 'msg-stats';
-            statsEl.innerHTML = '⚡ ' + (stats.tokens_per_second || 0) + ' tok/s · TTFT ' + (stats.ttft_ms || 0) + 'ms · ' + (stats.eval_count || 0) + ' tokens';
-            bubble.appendChild(statsEl);
-          }
-
           if (crudActions && crudActions.length > 0) {
             crudActions.forEach(action => {
               bubble.appendChild(createCrudCardElement(action));
@@ -2068,8 +2121,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                '<div class="code-header">' +
                '<span>' + language + '</span>' +
                '<div class="code-actions">' +
-               '<button class="code-btn copy-btn" data-code="' + encodeURIComponent(code) + '">Copy</button>' +
-               '<button class="code-btn insert-btn" data-code="' + encodeURIComponent(code) + '">Insert at Cursor</button>' +
+               '<button class="code-btn copy-btn" title="Copy code" data-code="' + encodeURIComponent(code) + '">⧉ Copy</button>' +
+               '<button class="code-btn insert-btn" title="Insert at cursor" data-code="' + encodeURIComponent(code) + '">↳ Insert</button>' +
                '</div></div>' +
                '<pre><code>' + code + '</code></pre>' +
                '</div>';
@@ -2133,6 +2186,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       if (action.diff) {
+        const details = document.createElement('details');
+        details.open = false;
+        const summary = document.createElement('summary');
+        summary.textContent = 'Show diff preview';
+        details.appendChild(summary);
         const preview = document.createElement('div');
         preview.className = 'crud-diff-preview';
         const lines = action.diff.split('\\n');
@@ -2146,12 +2204,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           return escapeHtml(line);
         }).join('\\n');
-        card.appendChild(preview);
+        details.appendChild(preview);
+        card.appendChild(details);
       } else if (action.content) {
+        const details = document.createElement('details');
+        const summary = document.createElement('summary');
+        summary.textContent = 'Show file preview';
+        details.appendChild(summary);
         const preview = document.createElement('div');
         preview.className = 'crud-diff-preview';
         preview.textContent = action.content.slice(0, 300) + (action.content.length > 300 ? '\\n...' : '');
-        card.appendChild(preview);
+        details.appendChild(preview);
+        card.appendChild(details);
       }
 
       const actionsDiv = document.createElement('div');

@@ -281,6 +281,7 @@ def _run_inference(active: ActiveInference, output_lock: Lock, active_lock: Lock
                     pass
 
         client = OllamaClient(endpoint, float(timeout))
+        explanation = ""
         if task == "explain_code":
             if hint_only:
                 explanation = client.explain_code_stream(
@@ -324,8 +325,8 @@ def _run_inference(active: ActiveInference, output_lock: Lock, active_lock: Lock
                 model,
                 str(prefix),
                 str(suffix),
-                max_tokens=int(max_tokens),
-                temperature=float(temperature),
+                max_tokens=int(cast(Any, max_tokens)),
+                temperature=float(cast(Any, temperature)),
                 cancel_event=active.cancel_event,
             )
         stats = None
@@ -338,7 +339,7 @@ def _run_inference(active: ActiveInference, output_lock: Lock, active_lock: Lock
             if gpu.get("present"):
                 stats["vram_free_bytes"] = gpu.get("vram_free_bytes")
         if not active.cancel_event.is_set():
-            _finish(active, lambda: _respond(request, task, explanation, output_lock, stats=stats), active_lock)
+            _finish(active, lambda: _respond(request, cast(str, task), explanation, output_lock, stats=stats), active_lock)
     except OllamaError as error:
         if active.cancel_event.is_set() or error.code == "REQUEST_CANCELLED":
             _finish(
@@ -487,7 +488,8 @@ def _validate_message(request: dict[str, object]) -> tuple[str, str, str] | None
                 "The explanation language must be Python.",
                 "Set language to python and retry.",
             )
-        if not isinstance(request.get("code"), str) or not request["code"].strip():
+        code = request.get("code")
+        if not isinstance(code, str) or not code.strip():
             return (
                 "REQUEST_INVALID",
                 "No Python code was provided.",
