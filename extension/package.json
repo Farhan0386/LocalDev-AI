@@ -19,7 +19,8 @@
     "onView:localdev-ai.chatView",
     "onCommand:localdev-ai.openChat",
     "onCommand:localdev-ai.helloWorld",
-    "onCommand:localdev-ai.checkHardware"
+    "onCommand:localdev-ai.checkHardware",
+    "onCommand:localdev-ai.toggleAutocomplete"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -77,6 +78,10 @@
       {
         "command": "localdev-ai.proposePatch",
         "title": "LocalDev AI: Propose Minimal Python Patch"
+      },
+      {
+        "command": "localdev-ai.toggleAutocomplete",
+        "title": "LocalDev AI: Toggle Tab Autocomplete"
       }
     ]
   },
@@ -103,6 +108,13 @@
         "type": "boolean",
         "default": false,
         "description": "Ask the local model to provide hints before complete answers."
+      },
+      "localdev-ai.maxRenderedMessages": {
+        "type": "number",
+        "default": 100,
+        "minimum": 20,
+        "maximum": 200,
+        "description": "Maximum chat messages rendered in the sidebar DOM to limit memory use."
       }
     }
   },

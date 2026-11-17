@@ -253,6 +253,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         messageCount: s.messages.length,
       })),
       autocompleteEnabled: this._inlineCompletionProvider?.isEnabled() ?? true,
+      maxRenderedMessages: vscode.workspace
+        .getConfiguration('localdev-ai')
+        .get<number>('maxRenderedMessages', 100),
     });
   }
 
@@ -1536,6 +1539,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     let currentMode = 'learn';
     let currentStreamingMsgEl = null;
+    let maxRenderedMessages = 100;
 
     vscode.postMessage({ type: 'ready' });
 
@@ -1547,6 +1551,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (msg.activeSession) renderSession(msg.activeSession);
           if (msg.sessions) renderSessionsList(msg.sessions, msg.activeSession?.id);
           if (typeof msg.autocompleteEnabled === 'boolean') updateAutocompletePill(msg.autocompleteEnabled);
+          if (typeof msg.maxRenderedMessages === 'number') {
+            maxRenderedMessages = Math.max(20, Math.min(200, Math.floor(msg.maxRenderedMessages)));
+          }
           break;
         case 'sessionsList':
           renderSessionsList(msg.sessions, msg.activeSessionId);
@@ -1944,7 +1951,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       msgEl.appendChild(header);
       msgEl.appendChild(bubble);
       chatStream.appendChild(msgEl);
+      trimRenderedMessages();
       chatStream.scrollTop = chatStream.scrollHeight;
+    }
+
+    function trimRenderedMessages() {
+      while (chatStream.children.length > maxRenderedMessages) {
+        chatStream.removeChild(chatStream.firstElementChild);
+      }
     }
 
     function startStream(id, role) {
@@ -1967,6 +1981,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       msgEl.appendChild(header);
       msgEl.appendChild(bubble);
       chatStream.appendChild(msgEl);
+      trimRenderedMessages();
       chatStream.scrollTop = chatStream.scrollHeight;
 
       currentStreamingMsgEl = msgEl;
@@ -2020,6 +2035,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
       currentStreamingMsgEl = null;
+      trimRenderedMessages();
       chatStream.scrollTop = chatStream.scrollHeight;
     }
 
@@ -2098,7 +2114,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       const badge = document.createElement('span');
       badge.className = 'crud-badge ' + action.action;
-      badge.textContent = action.action.toUpperCase();
+      badge.textContent = action.action === 'read' ? '📖 Read' : action.action.toUpperCase();
 
       const pathSpan = document.createElement('span');
       pathSpan.className = 'crud-path';

@@ -3,9 +3,9 @@
 ## Project Overview
 
 - **Project name:** LocalDev AI
-- **Current development phase:** Complete — all six phases signed off
-- **Overall completion:** Phase 1, Phase 2, Phase 3, Phase 4, Phase 5, and Phase 6 complete and verified
-- **Last updated:** 2026-11-16
+- **Current development phase:** Complete — all seven phases signed off
+- **Overall completion:** Phase 1 through Phase 7 complete and verified
+- **Last updated:** 2026-11-17
 
 The repository contains the TypeScript VS Code extension and Python engine foundation. The documented product is a learning-focused VS Code extension with a local Python engine and Ollama-based inference, beginning with Python support.
 
@@ -45,6 +45,7 @@ The repository contains the TypeScript VS Code extension and Python engine found
 - Phase 6 workspace context collector (`workspaceContext.ts`) and multi-turn chat engine protocol (`chat_session` in `ollama.py` and `__main__.py`) are complete with active editor detection, `@file` reference parsing, directory tree outlines, and bounded local context.
 - Phase 6 safe user-controlled CRUD tool calling is complete: model proposes structured tool blocks, rendered as interactive confirmation cards, executed via `vscode.workspace.fs` strictly upon explicit user approval.
 - Phase 6 extension compilation, 11 Node unit tests, and 34 Python tests verified on 2026-11-16.
+- Phase 7 sidebar completion is implemented: automatic workspace-bounded read observations, final-response telemetry, Ollama controls, model manager, per-project sessions, Tab Autocomplete toggle, and bounded DOM rendering.
 
 ## Completed Phase Checklist
 
@@ -100,6 +101,15 @@ The repository contains the TypeScript VS Code extension and Python engine found
 - [x] Implement workspace context collector (`workspaceContext.ts`) with active editor inspection, bounded selection/file snippets, `@file` reference scanning, and workspace directory outline (`@workspace`).
 - [x] Implement user-controlled workspace CRUD operations with strict JSON tool calling (`create`, `update`, `delete`, `read`), interactive sidebar confirmation cards, and safety checks executing changes strictly upon explicit user approval via `vscode.workspace.fs`.
 - [x] Verify zero regressions with 34 Python pytest tests, 11 extension Node tests, clean TypeScript compilation, and VSIX packaging.
+
+### Phase 7 — Sidebar Completion and Local Runtime Controls
+
+- [x] Auto-execute model-proposed `read` actions with `vscode.workspace.fs.readFile` and feed bounded observations into the model loop.
+- [x] Add read badges, final-response `tok/s`/TTFT/RAM telemetry, and Start/Stop Ollama controls.
+- [x] Add Model Manager pull/copy flows and hardware-tiered recommendations.
+- [x] Persist per-project multi-session chats in `workspaceState` with new-chat and history switching.
+- [x] Add Tab Autocomplete toggle and cap rendered sidebar messages for low-RAM efficiency.
+- [x] Register Phase 7 command/settings metadata and verify compile, tests, Python regression suite, and VSIX packaging.
 
 ## Files Created or Modified
 
