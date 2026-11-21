@@ -1,6 +1,7 @@
 pyproject.toml
 src/localdev_ai_engine/__init__.py
 src/localdev_ai_engine/__main__.py
+src/localdev_ai_engine/hardware.py
 src/localdev_ai_engine/ollama.py
 src/localdev_ai_engine/status.py
 src/localdev_ai_engine.egg-info/PKG-INFO
@@ -8,6 +9,7 @@ src/localdev_ai_engine.egg-info/SOURCES.txt
 src/localdev_ai_engine.egg-info/dependency_links.txt
 src/localdev_ai_engine.egg-info/requires.txt
 src/localdev_ai_engine.egg-info/top_level.txt
+tests/test_chat.py
 tests/test_engine.py
 tests/test_explain.py
 tests/test_ollama.py

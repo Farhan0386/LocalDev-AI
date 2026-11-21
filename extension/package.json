@@ -10,7 +10,7 @@
     "url": "https://github.com/Farhan0386/LocalDev-AI.git"
   },
   "engines": {
-    "vscode": "^1.100.0"
+    "vscode": "^1.146.0"
   },
   "categories": [
     "Other"
@@ -128,7 +128,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.19.43",
-    "@types/vscode": "^1.100.0",
+    "@types/vscode": "^1.146.0",
     "@vscode/vsce": "^3.6.1",
     "typescript": "^5.3.2"
   }
