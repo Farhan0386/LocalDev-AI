@@ -135,35 +135,49 @@ export async function resolveWorkspaceFile(target: string): Promise<vscode.Uri |
 }
 
 /**
- * Scans prompt text for @filename mentions and retrieves their content.
+ * Scans prompt text for @filename mentions and retrieves their content within budget.
  */
 export async function collectReferencedFiles(
   prompt: string,
   explicitPaths: string[] = [],
   maxFileChars = MAX_FILE_CHARS,
+  maxFiles = 4,
+  totalBudgetChars = 4500,
 ): Promise<ReferencedFile[]> {
   const results: ReferencedFile[] = [];
   const mentioned = new Set<string>(explicitPaths);
 
-  // Match @filename patterns like @src/index.ts or @app.py or @main.py
+  // Match @filename patterns like @src/index.ts or @app.py; ignore bare Python decorators like @property
   const regex = /@([a-zA-Z0-9_\-./\\]+)/g;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(prompt)) !== null) {
     const target = match[1].trim();
-    if (target && target !== 'workspace' && target !== 'file') {
+    if (
+      target
+      && target !== 'workspace'
+      && target !== 'file'
+      && (target.includes('.') || target.includes('/') || target.includes('\\'))
+    ) {
       mentioned.add(target);
     }
   }
 
+  let usedChars = 0;
   for (const name of mentioned) {
+    if (results.length >= maxFiles || usedChars >= totalBudgetChars) {
+      break;
+    }
     try {
       const uri = await resolveWorkspaceFile(name);
       if (uri) {
         const bytes = await vscode.workspace.fs.readFile(uri);
         const content = Buffer.from(bytes).toString('utf-8');
+        const allowed = Math.min(maxFileChars, Math.max(400, totalBudgetChars - usedChars));
+        const truncated = truncateText(content, MAX_FILE_LINES, allowed);
+        usedChars += truncated.length;
         results.push({
           path: vscode.workspace.asRelativePath(uri),
-          content: truncateText(content, MAX_FILE_LINES, maxFileChars),
+          content: truncated,
         });
       }
     } catch {
@@ -188,7 +202,7 @@ export async function searchWorkspaceFiles(query: string, maxResults = 8): Promi
 }
 
 /**
- * Assembles full workspace context data for chat inference.
+ * Assembles full workspace context data for chat inference within a strict character budget.
  */
 export async function buildWorkspaceContext(
   prompt: string,
@@ -199,22 +213,45 @@ export async function buildWorkspaceContext(
     maxBudgetChars?: number;
   } = {},
 ): Promise<WorkspaceContextData> {
-  const budget = options.maxBudgetChars || 6000;
-  const maxPerFile = Math.min(MAX_FILE_CHARS, Math.max(1000, Math.floor(budget / 2)));
+  const budget = Math.max(1500, Math.min(12000, options.maxBudgetChars || 4500));
+  let remaining = budget;
 
   const context: WorkspaceContextData = {
     referenced_files: [],
   };
 
   if (options.includeActiveEditor !== false) {
-    context.active_file = getActiveEditorContext();
+    const active = getActiveEditorContext();
+    if (active) {
+      const activeCap = Math.min(MAX_FILE_CHARS, Math.floor(budget * 0.45));
+      if (active.content.length > activeCap) {
+        active.content = active.content.slice(0, activeCap) + '\n... [content truncated]';
+      }
+      remaining = Math.max(0, remaining - active.content.length);
+      context.active_file = active;
+    }
   }
 
-  if (options.includeWorkspaceTree) {
-    context.directory_tree = await collectDirectoryTree();
+  if (options.includeWorkspaceTree && remaining > 400) {
+    const treeCap = Math.min(1400, Math.floor(budget * 0.25), remaining);
+    let tree = await collectDirectoryTree(45);
+    if (tree.length > treeCap) {
+      tree = tree.slice(0, treeCap) + '\n... [tree truncated]';
+    }
+    remaining = Math.max(0, remaining - tree.length);
+    context.directory_tree = tree;
   }
 
-  context.referenced_files = await collectReferencedFiles(prompt, options.explicitFilePaths || [], maxPerFile);
+  if (remaining > 400) {
+    const maxPerFile = Math.min(MAX_FILE_CHARS, Math.max(600, Math.floor(remaining * 0.6)));
+    context.referenced_files = await collectReferencedFiles(
+      prompt,
+      options.explicitFilePaths || [],
+      maxPerFile,
+      4,
+      remaining,
+    );
+  }
 
   return context;
 }

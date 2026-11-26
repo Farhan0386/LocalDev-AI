@@ -132,12 +132,13 @@ def test_protocol_rejects_invalid_cancellation_messages(monkeypatch, capsys):
 
 
 def test_protocol_rejects_oversized_and_nonstandard_json(monkeypatch, capsys):
-    oversized = '{"protocol_version":"1","type":"request","request_id":"x","task":"check_setup","padding":"' + ("a" * (64 * 1024)) + '"}\n'
+    oversized = '{"protocol_version":"1","type":"request","request_id":"req-big-1","task":"check_setup","padding":"' + ("a" * (64 * 1024)) + '"}\n'
     messages = _run_protocol(monkeypatch, capsys, [
         oversized,
         '{"protocol_version":"1","type":"request","request_id":"x","task":"check_setup","value":NaN}\n',
     ])
     assert messages[1]["code"] == "REQUEST_TOO_LARGE"
+    assert messages[1]["request_id"] == "req-big-1"
     assert messages[2]["code"] == "PROTOCOL_ERROR"
 
 

@@ -1,286 +1,198 @@
 # LocalDev AI — API and Integration Contract
 
-**Status:** Accepted and implemented through Phase 5. Windows and Ubuntu
-validation is complete; macOS and older Ollama compatibility remain
-unvalidated.
+**Status:** Implemented (Protocol Version `"1"`). Windows and Ubuntu 26.10 live Ollama workflows are validated; macOS and older Ollama versions remain unvalidated.
 
-## 1. Integration goals
+## 1. Transport Overview
 
-- Use Ollama for local inference.
-- Keep the core workflow independent of paid cloud AI APIs.
-- Support concise answers and streaming where practical.
-- Validate all requests and handle unavailable services cleanly.
-- Send only the code context needed for the current task.
+The VS Code extension manages a long-lived Python 3.12+ child process (`python -m localdev_ai_engine`) communicating over `stdin`/`stdout` using newline-delimited JSON (**JSONL**, UTF-8).
 
-## 2. Ollama integration
+- **`stdout`:** Strictly reserved for JSONL protocol messages (`protocol_version: "1"`).
+- **`stderr`:** Reserved for non-protocol diagnostic logs (source code and full prompts are excluded by default).
+- **Line Size Limit:** Incoming `stdin` JSONL lines are bounded to `64 KiB` (`65,536` bytes UTF-8). If an oversized line arrives, `__main__.py` sniffs `"request_id"` from the leading bytes so the client receives a correlated `REQUEST_TOO_LARGE` error instead of hanging. `pythonEngine.ts` also checks serialized payloads before writing to `stdin`.
 
-The Python engine uses Ollama's native local API. Keep the base URL
-configurable, defaulting to `http://127.0.0.1:11434`. Do not assume Ollama is
-installed, running, or has a required model available.
+### Lifecycle Handshake
 
-The implementation should:
-- Check runtime reachability.
-- Discover installed models through the runtime API.
-- Validate the selected model before inference.
-- Support streaming if the chosen endpoint/client permits it.
-- Set explicit timeouts and handle cancellation where feasible.
-- Normalize runtime errors into useful user-facing messages.
-- Avoid logging source code or complete prompts by default.
-- Use `GET /api/tags` for model discovery.
-- Use `GET /api/version` for the Ollama server version.
-- Use streaming `POST /api/chat` for inference.
-- Do not authenticate local requests.
-- Discover available installed models before inference and let the user select
-  an installed model without silently downloading one.
-- Allow the user to select another installed model.
-- If the selected or recommended model is unavailable, return actionable
-  guidance to install or select a model; never download one automatically.
-- Hardware-fit guidance is presented by `hardware_diagnostics`; the extension
-  does not silently select or download a model.
-
-Tasks 2 and 3 implement Ollama readiness and explanation through the Python
-engine only:
-`GET /api/version` and `GET /api/tags`. The default endpoint is
-`http://127.0.0.1:11434`; the extension passes a validated user setting and a
-configurable five-second connection timeout to the engine. The engine returns
-safe structured errors for unreachable Ollama, timeouts, invalid JSON, invalid
-model metadata, and missing selected models. Empty model lists are valid and
-never trigger a download.
-
-`explain_code` uses streaming `POST /api/chat` with the selected installed model.
-The engine sends a focused learner-oriented prompt containing the selected
-Python code and optional question, with `stream: true`. It parses newline-
-delimited chunks, forwards non-empty `message.content` values as ordered token
-events, and returns validated
-`message.content` as the structured response message; `patch` remains `null`.
-Empty code, missing models, unavailable/timeout/HTTP failures, and malformed
-responses produce actionable structured errors. The extension never sends code
-directly to Ollama, executes generated code, or applies a patch without
-explicit approval.
-
-Current stable Ollama is the target. Older-version compatibility is
-unvalidated. Endpoint details and response formats are implemented against the
-local API contract and covered by mocked tests.
-
-## 3. Extension ↔ engine JSONL protocol
-
-The extension starts a long-lived Python child process and communicates over
-stdin/stdout. Each line is one JSON object. stdout contains protocol messages
-only; diagnostics use stderr. Every message includes `protocol_version` and,
-for request-scoped messages, `request_id`.
-
-The protocol supports these typed messages:
-
-- `request` — submit a validated task.
-- `event` — stream incremental output.
-- `response` — terminal successful result.
-- `error` — terminal failed result.
-- `cancel` — request best-effort cancellation.
-
-The extension owns startup and shutdown. It must detect startup failure,
-unexpected exit, malformed stdout, and stale processes. Shutdown is graceful
-first, followed by bounded termination and restart when required.
-
-The protocol does not otherwise define a health handshake. For lifecycle
-readiness, the engine emits one unscoped startup event immediately after it
-initializes:
+Immediately upon startup, the engine emits:
 
 ```json
 {"protocol_version":"1","type":"event","event":"ready"}
 ```
 
-The extension considers the process `RUNNING` only after receiving this event
-within the 20-second startup timeout. This is a deliberately small, backward-
-compatible lifecycle addition; request-scoped events and terminal messages
-retain the existing correlation-ID rules.
+The extension waits up to **20 seconds** (`ENGINE_STARTUP_TIMEOUT_MS`) before marking startup failed.
 
-The packaged extension resolves the engine from its bundled `engine/src`
-directory. Its isolated environment is stored under VS Code global storage;
-the current engine has no runtime dependencies, so packaging and startup do
-not install packages into either the global interpreter or an existing
-environment.
+---
 
-## 4. Request contract
+## 2. JSONL Message Envelope
 
-Example request shape:
+### Request (`type: "request"`)
+
+Allowed top-level keys (`REQUEST_FIELDS` in `__main__.py`):
+`protocol_version`, `type`, `request_id`, `task`, `language`, `code`, `question`, `traceback`, `context`, `options`, `messages`, `mode`, `workspace_context`, `model`, `name`, `source`, `destination`, `prefix`, `suffix`, `max_tokens`, `temperature`.
 
 ```json
 {
   "protocol_version": "1",
   "type": "request",
-  "request_id": "uuid",
-  "task": "explain_code",
-  "language": "python",
-  "code": "print('hello')",
-  "question": "Explain this code",
-  "context": {
-    "diagnostics": [],
-    "file_name": "example.py"
-  },
+  "request_id": "request-1732640000000-1",
+  "task": "chat_session",
   "options": {
-    "hint_only": false,
-    "stream": true
+    "ollama_endpoint": "http://127.0.0.1:11434",
+    "ollama_timeout_seconds": 120,
+    "model": "qwen3:4b",
+    "mode": "edit",
+    "use_gpu": true,
+    "num_gpu": -1,
+    "num_ctx": 4096,
+    "messages": [{"role": "user", "content": "Explain @app.py"}],
+    "workspace_context": {
+      "active_file": {"path": "app.py", "language": "python", "content": "...", "line_range": "1-20"},
+      "referenced_files": [],
+      "directory_tree": "app.py\nutils.py"
+    }
   }
 }
 ```
 
-Requests require `protocol_version`, `type`, `request_id`, and a
-supported `task`. `explain_code` additionally requires `language: "python"`
-and non-empty string `code`; optional `question`, `context`, and `options`
-must have object/string shapes appropriate to their use. Unsupported fields,
-tasks, message types, invalid request IDs, non-standard JSON constants, and
-malformed types are rejected with structured errors. Every incoming JSONL line
-is limited to 64 KiB when encoded as UTF-8; oversized lines are rejected
-without terminating the engine.
+### Streaming Token Event (`type: "event"`, `event: "token"`)
 
-Implemented task names:
-- `explain_code`
-- `check_setup`
-- `discover_models`
-- `select_model`
-- `explain_traceback`
-- `propose_patch`
-- `hardware_diagnostics`
-
-`explain_traceback` and `propose_patch` use a parsed traceback in
-`options.traceback`; `propose_patch` also requires `options.code` and a
-selected installed model. `hardware_diagnostics` reports hardware, installed
-models, fit estimates, and setup guidance. The standalone
-`engine/scripts/benchmark.py` exercises these JSONL tasks and does not add a
-protocol task.
-
-## 5. Response and streaming contract
-
-```json
-{
-  "protocol_version": "1",
-  "type": "response",
-  "request_id": "uuid",
-  "status": "ok",
-  "task": "explain_code",
-  "message": "Short explanation",
-  "patch": null,
-  "warnings": []
-}
-```
-
-Streaming uses ordered `event` messages, initially with `event: "token"` and
-text content:
+Emitted by `explain_code`, `chat_session`, and `pull_model`:
 
 ```json
 {
   "protocol_version": "1",
   "type": "event",
-  "request_id": "uuid",
+  "request_id": "request-1732640000000-1",
   "event": "token",
   "sequence": 1,
-  "text": "This code"
+  "text": "Here is"
 }
 ```
 
-Token events are followed by exactly one terminal `response` or `error`.
-The terminal response contains the complete normalized message.
-`explain_code`, `explain_traceback`, and `propose_patch` return their result
-in `message`; `patch` remains `null` because proposed diffs are reviewed in
-the extension's output/diff surface.
+`sequence` starts at `1` and increments monotonically by `1` per request.
 
-Only one inference request is active initially. Additional requests are
-rejected with a structured retryable `BUSY` error; there is no request queue in
-the MVP. The user may cancel the active request and retry.
-
-Cancellation uses:
+### Terminal Response (`type: "response"`)
 
 ```json
 {
   "protocol_version": "1",
-  "type": "cancel",
-  "request_id": "uuid"
+  "type": "response",
+  "request_id": "request-1732640000000-1",
+  "status": "ok",
+  "task": "chat_session",
+  "message": "Complete normalized response text or task object",
+  "patch": null,
+  "warnings": [],
+  "stats": {
+    "eval_count": 120,
+    "prompt_eval_count": 310,
+    "total_tokens": 430,
+    "eval_duration_ms": 2400.0,
+    "prompt_eval_duration_ms": 180.0,
+    "total_duration_ms": 2700.0,
+    "tokens_per_second": 50.0,
+    "ttft_ms": 240.0,
+    "num_gpu": -1,
+    "num_ctx": 4096,
+    "execution_mode": "GPU",
+    "ram_available_bytes": 9663676416,
+    "vram_free_bytes": 3800000000,
+    "use_gpu": true,
+    "gpu_present": true
+  }
 }
 ```
 
-Cancellation is best effort. Request IDs propagate cancellation to the Python
-engine, which stops producing events and closes the active Ollama streaming
-connection. Late results for cancelled requests are ignored. If cleanup
-cannot complete cooperatively, the extension restarts the engine only when it
-becomes unresponsive. Cancellation returns a terminal cancellation error or
-explicit cancelled response.
+*(Note: `stats` is attached on `chat_session` responses.)*
 
-The Python engine keeps its stdin loop responsive by running the active
-inference in a worker thread. A matching `cancel` message sets a cooperative
-cancellation event, closes the current Ollama response, and emits one
-`REQUEST_CANCELLED` terminal error. Duplicate or non-matching cancellation
-messages have no effect. The extension binds the VS Code progress cancellation
-token to this control message and stops appending tokens after the terminal
-error.
-
-Initial configurable operational defaults are: 20 seconds for Python engine
-startup, 5 seconds for Ollama connection, 120 seconds for first token, 120
-seconds for streaming inactivity, 10 minutes for maximum request duration,
-64 KB for the maximum JSONL request message, and 2,048 tokens for default
-maximum generated output. These are initial defaults for hardware testing, not
-guaranteed performance limits.
-
-## 6. Error categories and handling
-
-- `ENGINE_UNAVAILABLE`
-- `OLLAMA_UNAVAILABLE`
-- `MODEL_NOT_INSTALLED`
-- `MODEL_NOT_FOUND`
-- `REQUEST_INVALID`
-- `INFERENCE_TIMEOUT`
-- `INFERENCE_FAILED`
-- `OUTPUT_INVALID`
-- `HARDWARE_METRIC_UNAVAILABLE`
-- `RESOURCE_PRESSURE`
-- `REQUEST_CANCELLED`
-- `PROTOCOL_ERROR`
-- `REQUEST_TOO_LARGE`
-
-Errors include the request ID, stable code, concise message, practical action,
-retryability, and optional non-sensitive details:
+### Terminal Error (`type: "error"`)
 
 ```json
 {
   "protocol_version": "1",
   "type": "error",
-  "request_id": "uuid",
+  "request_id": "request-1732640000000-1",
   "code": "OLLAMA_UNAVAILABLE",
   "message": "Ollama is not reachable.",
-  "action": "Start Ollama and retry the request.",
-  "retryable": true,
-  "details": null
+  "action": "Start Ollama, check the endpoint setting, and retry.",
+  "retryable": true
 }
 ```
 
-Errors must not expose source code, full prompts, credentials, or raw provider
-payloads by default. The extension maps errors to actionable UI states and
-never applies incomplete or malformed output.
+### Cancellation (`type: "cancel"`)
 
-## 7. Patch safety
+```json
+{
+  "protocol_version": "1",
+  "type": "cancel",
+  "request_id": "request-1732640000000-1"
+}
+```
 
-- Never apply a generated patch automatically.
-- Validate the patch and target document state before applying.
-- Show a diff or equivalent review surface.
-- Require an explicit user action.
-- Make rejection easy and preserve the original text.
-- Never automatically execute generated code.
+Sets `active.cancel_event`, closes the open Ollama HTTP stream, suppresses late tokens, and emits one `REQUEST_CANCELLED` terminal error.
 
-## 8. Security and network behavior
+---
 
-- If using local HTTP between components, bind to loopback and validate inputs.
-- Do not expose a local engine to the LAN by default.
-- Avoid arbitrary URL fetching or shell command execution from model output.
-- Explain that downloading models requires network access.
-- Test actual network activity and document dependencies that may communicate externally.
+## 3. Supported Engine Tasks (`SUPPORTED_TASKS`)
 
-## 9. Implemented scope and limitations
+All 12 tasks defined in `engine/src/localdev_ai_engine/__main__.py`:
 
-The transport, task routing, streaming, cancellation, patch review, hardware
-diagnostics, and benchmark are implemented. The engine uses only the Python
-standard library at runtime; Ollama remains a required local runtime for model
-inference and is never downloaded or selected automatically.
+| Task | Execution | Required / Key Inputs | Output (`response.message`) |
+|---|---|---|---|
+| `check_setup` | Sync | None | `{ service, status, version }` from `status.health_status()`. |
+| `discover_models` | Sync | `options.ollama_endpoint`, `ollama_timeout_seconds` | `{ endpoint, version, models: [...] }` from `/api/version` + `/api/tags`. |
+| `select_model` | Sync | `options.model` (+ endpoint/timeout) | Readiness dict with `selected_model` after verifying installation. |
+| `hardware_diagnostics` | Sync | `options.ollama_endpoint`, `ollama_timeout_seconds` | `{ hardware, models, guidance, recommendation, tiers, ollama_error? }`. Includes `recommend_model()` (with `alternatives` & `catalog`) and `get_hardware_tiers()` outputs. |
+| `copy_model` | Sync | `source`, `destination` | `{ status: "success", source, destination }` via `POST /api/copy`. |
+| `delete_model` | Sync | `model` or `name` | `{ status: "success", model }` via `DELETE /api/delete`. |
+| `explain_code` | Worker + Stream | `language: "python"`, `code`, optional `question`, `options.model`, `hint_only`, `use_gpu`, `num_gpu`, `num_ctx` | Streams `token` events; terminal `message` has complete explanation text. |
+| `explain_traceback` | Worker | `options.model`, `options.traceback` (parsed dict), `hint_only` | Explanation string from `/api/chat`. |
+| `propose_patch` | Worker | `options.model`, `options.code`, `options.traceback`, `hint_only` | Validated ```` ```diff ... ``` ```` unified diff string. |
+| `chat_session` | Worker + Stream | `options.model`, `messages`, `mode` (`"learn"` \| `"edit"`), `workspace_context`, `use_gpu`, `num_gpu`, `num_ctx` | Streams `token` events; terminal `message` + `stats` telemetry. |
+| `pull_model` | Worker + Stream | `model` or `name` | Streams download progress (`status [digest] (pct% — MiB)`), checks `"error"` chunks & `"status": "success"`. |
+| `inline_complete` | Worker | `model`, `prefix`, `suffix`, `max_tokens`, `temperature`, `use_gpu`, `num_gpu` | FIM completion string via `POST /api/generate` (`<\|fim_prefix\|>...`). Preempted automatically by `chat_session`/`pull_model`. |
 
-Windows and Ubuntu live workflows are validated. macOS and older Ollama
-versions remain unvalidated. Hardware fit labels and benchmark measurements
-are estimates affected by available memory, quantization, context size,
-Ollama scheduling, and operating-system metrics.
+*(Note: `recommend_model` and `get_hardware_tiers` are Python functions in `hardware.py` returned inside `hardware_diagnostics`, not standalone JSONL tasks.)*
+
+---
+
+## 4. Ollama HTTP Integration (`ollama.py`)
+
+Default base URL: `http://127.0.0.1:11434` (validated to require `http://` or `https://`).
+
+| Endpoint | Method | Purpose | Timeout Policy |
+|---|---|---|---|
+| `/api/version` | `GET` | Server reachability & version string | `ollama_timeout_seconds` (default `5s`) |
+| `/api/tags` | `GET` | Installed model discovery & metadata | `ollama_timeout_seconds` (default `5s`) |
+| `/api/chat` | `POST` | Chat, explanations, tracebacks, patches | Streaming socket `max(timeout, first_token_timeout_seconds)` (`120s`), watchdog `first_token=120s`, `inactivity=120s`, `max_duration=600s` |
+| `/api/generate` | `POST` | FIM `inline_complete` (and `keep_alive: 0` unload on Stop Ollama) | `max(timeout, 15s)` |
+| `/api/pull` | `POST` | Streaming model download (`stream: true`) | `max(timeout, 600s)` |
+| `/api/copy` | `POST` | Duplicate local model tag | `ollama_timeout_seconds` |
+| `/api/delete` | `DELETE` | Delete installed local model | `ollama_timeout_seconds` |
+
+### Inference Options Sent to Ollama
+
+- **`num_gpu`:** `0` when `use_gpu: false` (forces CPU-only); `numGpuLayers` when `use_gpu: true` and `numGpuLayers >= 0`; `-1` (Ollama auto-offload) when `use_gpu: true` and `numGpuLayers < 0`.
+- **`num_ctx`:** Positive integer passed when `localdev-ai.numCtx > 0`, or hardware-tier default (`2048` ultra-light, `4096` standard, `8192` performance) for `chat_session`.
+
+---
+
+## 5. Error Codes
+
+| Code | Source | Meaning |
+|---|---|---|
+| `PROTOCOL_ERROR` | `__main__.py` | Invalid JSON, non-standard JSON constant (`NaN`/`Infinity`), empty line, or wrong `protocol_version`. |
+| `REQUEST_TOO_LARGE` | `__main__.py` | JSONL line exceeds `64 KiB` UTF-8. |
+| `REQUEST_INVALID` | `__main__.py`, `ollama.py` | Missing/invalid required fields, unsupported task/language, or invalid timeout/options. |
+| `BUSY` | `__main__.py` | Another non-preemptible inference worker is currently active. |
+| `MODEL_NOT_FOUND` | `__main__.py`, `ollama.py` | Selected model is empty or not present in `/api/tags`. |
+| `OLLAMA_INVALID_ENDPOINT` | `ollama.py` | Endpoint does not start with `http://` or `https://`. |
+| `OLLAMA_UNAVAILABLE` | `ollama.py` | Connection refused, DNS/socket error, or connection timeout. |
+| `OLLAMA_HTTP_ERROR` | `ollama.py` | Non-2xx HTTP status from Ollama API. |
+| `OLLAMA_INVALID_RESPONSE` | `ollama.py` | Malformed JSON, unexpected shape, or empty model response. |
+| `OLLAMA_INFERENCE_ERROR` | `ollama.py` | Ollama emitted an `"error"` object inside `/api/chat` stream. |
+| `OLLAMA_PULL_FAILED` | `ollama.py` | Ollama emitted an `"error"` object or HTTP error during `/api/pull`. |
+| `OLLAMA_STREAM_INTERRUPTED` | `ollama.py` | Stream closed without `"done": true` (chat) or `"status": "success"` (pull). |
+| `INVALID_PATCH` | `ollama.py` | `propose_patch` output was not wrapped in a valid ```` ```diff ```` fence. |
+| `INFERENCE_TIMEOUT` | `ollama.py` | Watchdog exceeded first-token, inactivity, or max-duration limit. |
+| `REQUEST_CANCELLED` | `__main__.py`, `ollama.py` | Request cancelled cooperatively via `cancel` message. |
+| `INFERENCE_FAILED` | `__main__.py` | Unhandled unexpected exception in worker thread (logged to `stderr`). |

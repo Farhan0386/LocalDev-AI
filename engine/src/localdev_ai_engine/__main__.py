@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from threading import Event, Lock, Thread
@@ -14,6 +16,7 @@ from .status import health_status
 
 PROTOCOL_VERSION = "1"
 MAX_JSONL_MESSAGE_BYTES = 64 * 1024
+_REQUEST_ID_SNIFF_RE = re.compile(r'"request_id"\s*:\s*"([^"\\]{1,256})"')
 SUPPORTED_TASKS = {
     "check_setup",
     "discover_models",
@@ -74,7 +77,9 @@ def main() -> None:
 
     for line in sys.stdin:
         if len(line.encode("utf-8")) > MAX_JSONL_MESSAGE_BYTES:
-            _error({}, "REQUEST_TOO_LARGE", "The JSONL message exceeds the 64 KB limit.", "Reduce the request size and retry.", False, output_lock)
+            sniff = _REQUEST_ID_SNIFF_RE.search(line[:1024])
+            err_req: dict[str, object] = {"request_id": sniff.group(1)} if sniff else {}
+            _error(err_req, "REQUEST_TOO_LARGE", "The JSONL message exceeds the 64 KB limit.", "Reduce the request size and retry.", False, output_lock)
             continue
         if not line.strip():
             _error({}, "PROTOCOL_ERROR", "The engine received an empty JSONL message.", "Send a typed request and retry.", False, output_lock)
@@ -120,6 +125,25 @@ def main() -> None:
 
         task = request.get("task")
         if task in {"explain_code", "explain_traceback", "propose_patch", "chat_session", "pull_model", "inline_complete"}:
+            preempted_response = None
+            preempted_thread = None
+            with active_lock:
+                if active is not None and active.thread is not None and active.thread.is_alive():
+                    # Allow user-initiated chat/pull to preempt background inline autocomplete
+                    if active.request.get("task") == "inline_complete" and task != "inline_complete":
+                        active.cancel_event.set()
+                        preempted_response = active.response
+                        preempted_thread = active.thread
+                    else:
+                        _error(request, "BUSY", "An explanation request is already active.", "Wait for it to finish or cancel it, then retry.", True, output_lock)
+                        continue
+            if preempted_response is not None:
+                try:
+                    preempted_response.close()
+                except (AttributeError, OSError):
+                    pass
+            if preempted_thread is not None:
+                preempted_thread.join(timeout=1.0)
             with active_lock:
                 if active is not None and active.thread is not None and active.thread.is_alive():
                     _error(request, "BUSY", "An explanation request is already active.", "Wait for it to finish or cancel it, then retry.", True, output_lock)
@@ -241,6 +265,9 @@ def _run_inference(active: ActiveInference, output_lock: Lock, active_lock: Lock
     question = request.get("question", "")
     traceback = request.get("traceback", options.get("traceback"))
     hint_only = options.get("hint_only", False)
+    use_gpu = options.get("use_gpu", True)
+    num_gpu = options.get("num_gpu")
+    num_ctx = options.get("num_ctx")
     try:
         if not isinstance(endpoint, str) or not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
             raise OllamaError("REQUEST_INVALID", "The Ollama settings are invalid.", "Update the endpoint and timeout settings, then retry.", False)
@@ -252,6 +279,12 @@ def _run_inference(active: ActiveInference, output_lock: Lock, active_lock: Lock
             raise OllamaError("REQUEST_INVALID", "The explanation question must be text.", "Remove the invalid question and retry.", False)
         if not isinstance(hint_only, bool):
             raise OllamaError("REQUEST_INVALID", "The hint_only option must be boolean.", "Set hint_only to true or false and retry.", False)
+        if not isinstance(use_gpu, bool):
+            raise OllamaError("REQUEST_INVALID", "The use_gpu option must be boolean.", "Set use_gpu to true or false and retry.", False)
+        if num_gpu is not None and (not isinstance(num_gpu, int) or isinstance(num_gpu, bool)):
+            raise OllamaError("REQUEST_INVALID", "The num_gpu option must be an integer.", "Set num_gpu to an integer and retry.", False)
+        if num_ctx is not None and (not isinstance(num_ctx, int) or isinstance(num_ctx, bool) or num_ctx < 0):
+            raise OllamaError("REQUEST_INVALID", "The num_ctx option must be a non-negative integer.", "Set num_ctx to 0 or a positive integer and retry.", False)
         if task in {"explain_traceback", "propose_patch"} and not isinstance(traceback, dict):
             raise OllamaError("REQUEST_INVALID", "A parsed Python traceback is required.", "Provide a valid traceback and retry.", False)
         sequence = 0
@@ -281,6 +314,15 @@ def _run_inference(active: ActiveInference, output_lock: Lock, active_lock: Lock
                     pass
 
         client = OllamaClient(endpoint, float(timeout))
+        resolved_num_ctx = num_ctx if isinstance(num_ctx, int) and num_ctx > 0 else None
+        if task == "chat_session" and resolved_num_ctx is None:
+            resolved_num_ctx = int(get_hardware_tiers(detect_hardware()).get("num_ctx", 4096))
+        if hasattr(client, "configure_inference_options"):
+            client.configure_inference_options(
+                use_gpu=use_gpu,
+                num_gpu=num_gpu,
+                num_ctx=resolved_num_ctx,
+            )
         explanation = ""
         if task == "explain_code":
             if hint_only:
@@ -338,6 +380,10 @@ def _run_inference(active: ActiveInference, output_lock: Lock, active_lock: Lock
             gpu = hw.get("gpu", {})
             if gpu.get("present"):
                 stats["vram_free_bytes"] = gpu.get("vram_free_bytes")
+            if "execution_mode" not in stats:
+                stats["execution_mode"] = "CPU" if (not use_gpu or num_gpu == 0) else ("GPU" if gpu.get("present") else "CPU")
+            stats["use_gpu"] = use_gpu
+            stats["gpu_present"] = bool(gpu.get("present"))
         if not active.cancel_event.is_set():
             _finish(active, lambda: _respond(request, cast(str, task), explanation, output_lock, stats=stats), active_lock)
     except OllamaError as error:

@@ -236,3 +236,72 @@ def test_streaming_stats_collection():
     assert stats["prompt_eval_count"] == 10
     assert stats["tokens_per_second"] == 20.0
     assert stats["ttft_ms"] == 200.0
+
+
+def test_chat_session_passes_gpu_toggle_and_num_ctx_and_budgets_history():
+    captured = []
+
+    def opener(request, timeout):
+        if request.full_url.endswith("/api/tags"):
+            return FakeStreamResponse([json.dumps({"models": [{"name": "qwen3:4b"}]})])
+        if request.full_url.endswith("/api/chat"):
+            captured.append((json.loads(request.data), timeout))
+            return FakeStreamResponse([
+                json.dumps({"message": {"content": "Done."}, "done": True, "eval_count": 5, "eval_duration": 100_000_000}),
+            ])
+        raise RuntimeError(f"Unexpected url: {request.full_url}")
+
+    client = OllamaClient("http://127.0.0.1:11434", timeout_seconds=5.0, opener=opener)
+    long_history = [
+        {"role": "user", "content": f"Turn {i}: " + ("x" * 1800)}
+        for i in range(6)
+    ]
+    result = client.chat_session_stream(
+        "qwen3:4b",
+        long_history,
+        use_gpu=False,
+        num_ctx=2048,
+    )
+    assert result == "Done."
+    body, used_timeout = captured[0]
+    assert used_timeout >= 120.0
+    assert body["options"]["num_gpu"] == 0
+    assert body["options"]["num_ctx"] == 2048
+    assert client.last_stats["execution_mode"] == "CPU"
+    # Budgeted history should trim oldest turns to stay well within num_ctx
+    total_chars = sum(len(m["content"]) for m in body["messages"])
+    assert total_chars < 6500
+    assert any("earlier turn(s) omitted" in m["content"] for m in body["messages"] if m["role"] == "system")
+
+
+def test_pull_model_reports_error_stream_and_incomplete_stream():
+    def error_opener(request, timeout):
+        assert timeout >= 600.0
+        return FakeStreamResponse([
+            json.dumps({"status": "pulling manifest"}),
+            json.dumps({"error": "pull model manifest: file does not exist"}),
+        ])
+
+    client = OllamaClient("http://127.0.0.1:11434", timeout_seconds=5.0, opener=error_opener)
+    with pytest.raises(OllamaError) as err:
+        client.pull_model("missing:tag")
+    assert err.value.code == "OLLAMA_PULL_FAILED"
+    assert "file does not exist" in err.value.message
+
+    def incomplete_opener(request, timeout):
+        return FakeStreamResponse([json.dumps({"status": "pulling manifest"})])
+
+    with pytest.raises(OllamaError) as err2:
+        OllamaClient("http://127.0.0.1:11434", opener=incomplete_opener).pull_model("qwen3:4b")
+    assert err2.value.code == "OLLAMA_STREAM_INTERRUPTED"
+
+
+def test_recommend_model_includes_varied_catalog_and_alternatives():
+    rec = recommend_model({
+        "gpu": {"present": True, "name": "RTX 4060", "vram_total_bytes": 8 * 1024**3},
+        "memory": {"total_bytes": 16 * 1024**3},
+    })
+    assert len(rec["alternatives"]) >= 3
+    assert any(not name.startswith("qwen") for name in rec["alternatives"])
+    catalog_names = {item["name"] for item in rec["catalog"]}
+    assert {"qwen3:4b", "llama3.2:3b", "gemma3:4b", "deepseek-r1:7b", "phi4-mini:3.8b"}.issubset(catalog_names)

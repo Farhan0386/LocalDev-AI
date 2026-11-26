@@ -4,10 +4,16 @@
  */
 export function applyUnifiedDiff(patch: string, original: string): string | undefined {
   const content = patch
-    .replace(/^```diff\s*/i, '')
+    .replace(/^```(?:diff|patch)?\s*/i, '')
     .replace(/\s*```[\s\S]*$/i, '')
     .split(/\r?\n/)
-    .filter((line) => !line.startsWith('--- ') && !line.startsWith('+++ '));
+    .filter(
+      (line) =>
+        !line.startsWith('diff --git ')
+        && !line.startsWith('index ')
+        && !line.startsWith('--- ')
+        && !line.startsWith('+++ '),
+    );
   const source = original.split(/\r?\n/);
   const result: string[] = [];
   let sourceIndex = 0;

@@ -242,6 +242,15 @@ export class PythonEngine {
           this.cancel(requestId);
         }
       }
+      if (Buffer.byteLength(message, 'utf8') > 64 * 1024) {
+        if (task === 'explain_code') {
+          this.activeInferenceRequest = undefined;
+        }
+        this.pendingRequests.delete(requestId);
+        pending.cancellationDisposable?.dispose();
+        reject(new Error('Request payload exceeds the 64 KB engine limit. Reduce context or history size and retry.'));
+        return;
+      }
       this.process?.stdin.write(`${message}\n`);
     });
   }
@@ -384,6 +393,16 @@ export class PythonEngine {
               pending.reject(new Error(`${messageText}${action}`));
             }
           }
+        } else if (message.type === 'error' && !message.request_id && this.pendingRequests.size === 1) {
+          const [onlyId, pending] = Array.from(this.pendingRequests.entries())[0];
+          this.pendingRequests.delete(onlyId);
+          pending.cancellationDisposable?.dispose();
+          if (onlyId === this.activeInferenceRequest) {
+            this.activeInferenceRequest = undefined;
+          }
+          const messageText = typeof message.message === 'string' ? message.message : 'The engine request failed.';
+          const action = typeof message.action === 'string' ? ` ${message.action}` : '';
+          pending.reject(new Error(`${messageText}${action}`));
         }
       } catch (error) {
         this.handleProcessFailure(new PythonEngineError(`The Python engine sent invalid startup data: ${String(error)}`, 'ENGINE_STARTUP_FAILED'));

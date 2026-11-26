@@ -320,3 +320,41 @@ test('sends cancellation and permits a retry after the terminal error', async ()
   await manager.stop();
   rmSync(root, { recursive: true, force: true });
 });
+
+test('rejects unkeyed engine error instead of hanging and enforces 64KB limit', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'localdev-ai-'));
+  const environmentPath = path.join(root, 'venv');
+  mkdirSync(path.join(environmentPath, 'bin'), { recursive: true });
+  writeFileSync(path.join(environmentPath, 'bin', 'python'), '');
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.exitCode = null;
+  child.killed = false;
+  child.kill = () => true;
+  const manager = new PythonEngine({
+    sourcePath: root, environmentPath, platform: 'linux',
+    pythonCandidates: [{ command: 'python', args: [] }],
+    execFile: fakeRun, spawn: () => child, startupTimeoutMs: 100,
+  });
+  const start = manager.start();
+  child.stdout.write('{"protocol_version":"1","type":"event","event":"ready"}\n');
+  await start;
+
+  const pending = manager.request('check_setup');
+  await new Promise((resolve) => child.stdin.once('data', resolve));
+  child.stdout.write(JSON.stringify({
+    protocol_version: '1', type: 'error', request_id: null,
+    code: 'REQUEST_TOO_LARGE', message: 'The JSONL message exceeds the 64 KB limit.',
+  }) + '\n');
+  await assert.rejects(pending, /64 KB limit/);
+
+  await assert.rejects(
+    manager.request('chat_session', { padding: 'a'.repeat(70 * 1024) }),
+    /exceeds the 64 KB engine limit/,
+  );
+
+  await manager.stop();
+  rmSync(root, { recursive: true, force: true });
+});

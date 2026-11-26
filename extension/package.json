@@ -82,6 +82,10 @@
       {
         "command": "localdev-ai.toggleAutocomplete",
         "title": "LocalDev AI: Toggle Tab Autocomplete"
+      },
+      {
+        "command": "localdev-ai.toggleGpu",
+        "title": "LocalDev AI: Toggle dGPU Offload"
       }
     ]
   },
@@ -97,12 +101,42 @@
         "type": "number",
         "default": 5,
         "minimum": 0.1,
-        "description": "Ollama connection timeout in seconds."
+        "description": "Ollama readiness and metadata connection timeout in seconds."
+      },
+      "localdev-ai.inferenceTimeoutSeconds": {
+        "type": "number",
+        "default": 120,
+        "minimum": 10,
+        "description": "Streaming inference timeout in seconds for chat responses."
       },
       "localdev-ai.selectedModel": {
         "type": "string",
         "default": "",
         "description": "Installed Ollama model selected for future inference."
+      },
+      "localdev-ai.useGpu": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable dedicated GPU (dGPU) layer offloading in Ollama. Disable to force CPU-only inference (num_gpu: 0)."
+      },
+      "localdev-ai.numGpuLayers": {
+        "type": "number",
+        "default": -1,
+        "minimum": -1,
+        "description": "GPU layers to offload when dGPU is enabled (-1 lets Ollama decide automatically)."
+      },
+      "localdev-ai.numCtx": {
+        "type": "number",
+        "default": 0,
+        "minimum": 0,
+        "description": "Context window tokens (num_ctx) sent to Ollama (0 uses hardware-aware automatic sizing)."
+      },
+      "localdev-ai.maxHistoryTurns": {
+        "type": "number",
+        "default": 8,
+        "minimum": 2,
+        "maximum": 30,
+        "description": "Maximum recent conversation messages included per request to prevent context overflow."
       },
       "localdev-ai.hintOnly": {
         "type": "boolean",

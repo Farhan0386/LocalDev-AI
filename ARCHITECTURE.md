@@ -1,246 +1,83 @@
 # LocalDev AI — System Architecture
 
-**Status:** Accepted and implemented through Phase 5. Windows and Ubuntu
-validation is complete; macOS remains unvalidated.
+**Status:** Complete — Phases 1–7 plus reliability, UI, model management, and dGPU hardening. Windows and Ubuntu 26.10 live Ollama workflows are validated; macOS remains unvalidated.
 
-## 1. High-level design
+## 1. High-Level Design
 
 ```text
-VS Code
-  └── TypeScript Extension
-       ├── Commands, sidebar, editor context
-       ├── Response presentation and patch review
-       └── Extension ↔ Local Engine communication
-                         │
-                         ▼
-                  Python Local Engine
-                    ├── Request/task routing
-                    ├── Prompt construction
-                    ├── Ollama client
-                    ├── Hardware diagnostics
-                    ├── Model compatibility estimates
-                    └── Benchmarking/resource checks
-                         │
-              ┌──────────┴──────────┐
-              ▼                     ▼
-          Ollama API          OS / Hardware tools
-        Local model runtime   RAM, CPU, GPU metrics
+VS Code Extension Host (TypeScript)
+  ├── extension.ts            — Activation, commands, config sync, lifecycle
+  ├── chatViewProvider.ts     — Copilot-style sidebar webview, History & Model Managers,
+  │                             dGPU toggle, streaming, safe insertion & CRUD approval cards
+  ├── workspaceContext.ts     — Active editor, @file fuzzy resolution, @workspace tree, budgeting
+  ├── inlineCompletion.ts     — Debounced FIM Tab autocomplete provider
+  ├── diffUtils.ts            — Strict unified-diff parser & patch applier
+  ├── tracebackParser.ts      — Python stack-trace parser
+  └── pythonEngine.ts         — Python 3.12+ discovery, venv, JSONL child-process transport
+            │
+            │  JSONL v1 over stdin / stdout (<= 64 KiB per line)
+            ▼
+Python 3.12+ Local Engine (localdev_ai_engine)
+  ├── __main__.py             — Stdin/stdout router, schema & 64-KiB checks, preemption, worker thread
+  ├── ollama.py               — Stdlib HTTP client, streaming chat, context budgeting, dGPU/num_ctx,
+  │                             pull_model, copy_model, delete_model, FIM inline_complete, stats
+  ├── hardware.py             — CPU/RAM/NVIDIA VRAM detection, fit estimates, MODEL_CATALOG tiers
+  ├── status.py               — Engine health status
+  └── scripts/benchmark.py    — Dependency-free latency, TTFT, RSS, and privacy baseline runner
+            │
+            ├───────────────────────────┐
+            ▼                           ▼
+   Local Ollama HTTP API       OS / Hardware Probes
+  (http://127.0.0.1:11434)     (/proc/meminfo, GlobalMemoryStatusEx,
+   /api/version, /api/tags,     os.sysconf, nvidia-smi)
+   /api/chat, /api/generate,
+   /api/pull, /api/copy,
+   /api/delete
 ```
 
-## 2. Component responsibilities
+## 2. Component Responsibilities
 
-### VS Code extension (TypeScript)
-- Register commands and editor actions.
-- Read only the code context needed for the current request.
-- Present streamed answers where supported.
-- Display patch previews and collect explicit approval.
-- Communicate engine status and errors to the user.
+### VS Code Extension (`extension/src/`)
+- **Lifecycle & Commands (`extension.ts`):** Starts `PythonEngine` using the staged `engine/src` folder and an isolated `venv` under `globalStorageUri`. Registers all 11 palette/view commands and synchronizes `localdev-ai.*` configuration changes with the sidebar.
+- **Copilot-Style Sidebar (`chatViewProvider.ts`):** Hosts `localdev-ai.chatView` (`retainContextWhenHidden: true`), tracks `_lastActiveEditor` so code insertion works even after sidebar clicks, manages up to 30 per-workspace sessions in `workspaceState`, renders Model Manager and History drawers, enforces payload budgeting (`_fitPayloadToJsonlLimit`), and executes file writes/deletions only upon explicit user click on approval cards (`create`, `update`, `delete`) while allowing up to 2 bounded automatic `read` observation hops.
+- **Workspace Context (`workspaceContext.ts`):** Extracts the active selection (or top 80 lines) for `file` documents, builds a directory outline excluding build/cache directories (`DEFAULT_EXCLUDE_GLOB`), resolves `@filename` mentions from user prompts (skipping bare Python decorators like `@property`), and enforces a total character budget (`1500`–`12000` chars).
+- **Inline Completion (`inlineCompletion.ts`):** Provides debounced (`500ms`) Fill-In-the-Middle completions using 35 prefix lines and 20 suffix lines, forwarding `use_gpu` and `num_gpu` preferences.
+- **Diff & Traceback Utilities (`diffUtils.ts`, `tracebackParser.ts`):** Parses Python tracebacks and applies unified diffs (supporting optional markdown fences and `diff --git` / `index` headers) with strict context-line verification.
+- **Engine Transport (`pythonEngine.ts`):** Discovers Python 3.12+ (`py -3`, `python`, `python3`), creates/validates `venv`, enforces the 20-second `ready` handshake, prevents >64 KiB writes, validates strictly sequential `token` events (`sequence: 1..N`), handles unkeyed single-pending error frames cleanly, and runs graceful/bounded shutdown.
 
-### Python engine
-- Validate requests and construct task-specific prompts.
-- Call the configured local inference runtime.
-- Normalize errors and responses.
-- Inspect available system resources using platform-supported tools.
-- Recommend models using documented heuristics and report uncertainty.
-- Run repeatable benchmarks.
+### Python Engine (`engine/src/localdev_ai_engine/`)
+- **Protocol Loop & Concurrency (`__main__.py`):** Reads JSONL requests from `stdin`, sniffs `request_id` even when lines exceed `MAX_JSONL_MESSAGE_BYTES` (64 KiB) so clients receive correlated `REQUEST_TOO_LARGE` errors, validates request schemas, runs inference on a daemon worker `Thread`, processes `cancel` control messages immediately on the main loop, and injects `execution_mode`, `ram_available_bytes`, and `vram_free_bytes` into `chat_session` stats.
+- **Ollama Client (`ollama.py`):** Uses Python standard library `urllib.request` with zero external runtime dependencies. Handles readiness, model CRUD (`pull_model`, `copy_model`, `delete_model`), streaming chat (`chat_session_stream`, `explain_code_stream`), single-shot tasks (`explain_traceback`, `propose_patch`, `inline_complete`), watchdog timeouts, and throughput/TTFT telemetry.
+- **Hardware Intelligence (`hardware.py`):** Probes CPU cores/architecture, system memory, and optional NVIDIA GPU/VRAM (`nvidia-smi`), estimates per-model fit (`Comfortable`, `Tight`, `Too Large`, `Unknown`), and serves the 19-model `MODEL_CATALOG` across `ultra_light`, `standard`, and `performance` tiers.
 
-### Ollama
-- Download/manage local models and provide inference through its local API.
-- Is an external runtime dependency; the project does not train its own foundation model.
+## 3. Extension ↔ Engine Transport & Concurrency
 
-### Testing layer
-- Unit-test request routing, compatibility estimates, and error handling.
-- Integration-test the engine against a running Ollama instance where available.
-- Test extension commands and patch-review behavior.
-- Benchmark on documented hardware configurations.
+- **Transport:** Long-lived child process communicating via UTF-8 JSONL over `stdin`/`stdout` (`protocol_version: "1"`). `stdout` is strictly reserved for JSONL protocol messages; diagnostic logs go to `stderr`.
+- **Single-Worker Inference & Preemption:** Only one inference thread runs at a time. If a second non-inline inference request arrives while one is running, the engine rejects it immediately with retryable `BUSY`. However, if background `inline_complete` is running when a user-initiated `chat_session` or `pull_model` arrives, `__main__.py` cancels and preempts the stale `inline_complete` worker cleanly.
+- **Cancellation:** `cancel` messages set `active.cancel_event` and close the open HTTP response socket; the worker suppresses late tokens and emits a single `REQUEST_CANCELLED` terminal error.
 
-## 3. Extension ↔ engine transport
+## 4. Context Window Budgeting & Timeout Isolation
 
-The approved Phase 2 transport is a long-lived Python child process controlled
-by the extension. The extension communicates through the child's stdin/stdout
-using newline-delimited JSON (JSONL). stdout is reserved exclusively for
-protocol messages; engine diagnostics go to stderr.
+Multi-turn reliability relies on three coordinated guards:
+1. **Extension History & JSONL Guard:** `ChatViewProvider` selects at most `maxHistoryTurns` (default `8`) valid non-error messages, caps individual older messages (`2400` chars), bounds `workspaceContext` (`workspaceContext.ts`), and runs `_fitPayloadToJsonlLimit()` so the serialized JSONL request never exceeds `52 KiB` (safely under the `64 KiB` engine limit).
+2. **Engine `num_ctx` Budgeting:** `ollama.py` resolves `num_ctx` (explicit setting `localdev-ai.numCtx`, or hardware tier default `2048` / `4096` / `8192`) and passes `options.num_ctx` to `/api/chat`. `_budget_chat_messages()` keeps the system prompt (trimmed to <=55% of budget) plus as many recent turns as fit within `~2.8 * num_ctx` characters, inserting a compact omission note if older turns are dropped.
+3. **Separated Timeouts:** Metadata checks (`/api/version`, `/api/tags`, `/api/copy`, `/api/delete`) use `ollamaTimeoutSeconds` (`5s`). Streaming `/api/chat` uses `inferenceTimeoutSeconds` (`120s`, with socket timeout `>= first_token_timeout_seconds`) so multi-turn prompt evaluation never times out at 5 seconds; `pull_model` uses `>= 600s`. Watchdog threads enforce `first_token_timeout_seconds` (`120s`), `inactivity_timeout_seconds` (`120s`), and `max_request_duration_seconds` (`600s`).
 
-The protocol uses typed `request`, `event`, `response`, `error`, and `cancel`
-messages with a protocol version and correlation ID. The engine validates
-message types, protocol version, request IDs, supported tasks, allowed fields,
-task-specific fields, and a 64-KB UTF-8 JSONL line limit before dispatch.
-Malformed messages produce structured errors without terminating the process.
-The extension owns startup, graceful shutdown, bounded forced termination, and
-restart behavior.
+## 5. dGPU / CPU Offload Control
 
-The platform target is Windows, Linux, and macOS. Windows and Ubuntu process
-management and live Ollama workflows have been validated; macOS remains
-unvalidated. Unsupported metrics are reported as unavailable.
+- `localdev-ai.useGpu` (boolean, default `true`) and `localdev-ai.numGpuLayers` (`-1` default) are toggled directly from the sidebar `dGPU: ON/OFF` pill or `localdev-ai.toggleGpu`.
+- `_build_inference_options()` translates these to Ollama's `options.num_gpu`:
+  - `use_gpu = False` -> `"num_gpu": 0` (forces 100% CPU/RAM execution).
+  - `use_gpu = True` -> `"num_gpu": num_gpu` if `>= 0`, else `"num_gpu": -1` (Ollama automatic GPU layer offload).
+- Reported back in `stats.execution_mode` (`"GPU"` or `"CPU"`).
 
-Python distribution is owner-approved as user-managed Python, with a minimum
-version of 3.12. The extension detects Python, checks compatibility, creates
-an isolated LocalDev AI virtual environment, and never modifies global Python
-packages. Bundled Python remains deferred.
+## 6. Code Insertion & Patch Safety
 
-Development uses Node.js 24 LTS for development and CI. Users do not need a
-separate Node.js installation; the extension uses VS Code's bundled
-extension-host Node.js runtime. The minimum VS Code target is 1.100.
+- **Code Block Insert:** Resolving a valid `TextEditor` (active -> visible -> `_lastActiveEditor` -> first attached `@file` -> untitled buffer), focusing it via `showTextDocument`, checking `editor.edit(...)` success, moving selection, and calling `revealRange`.
+- **CRUD Approval Cards:** `create`, `update`, and `delete` actions always require clicking **Approve / Apply**. Updates read the live open `TextDocument` buffer when available, verify unified diffs via `applyUnifiedDiff` without guessing mismatched hunks, apply edits via `vscode.WorkspaceEdit`, and save cleanly. Workspace root containment is verified with `path.relative`.
 
-The approved Ollama integration uses the native local API at
-`http://127.0.0.1:11434` without authentication for local requests:
-`GET /api/tags` discovers models, `GET /api/version` reports the server
-version, and streaming `POST /api/chat` performs inference. Models are never
-downloaded automatically. Current stable Ollama is the target; older-version
-compatibility requires testing.
+## 7. Security, Privacy & Packaging
 
-## 4. Request lifecycle
-
-1. User invokes a command in VS Code.
-2. Extension collects selected code and relevant diagnostic context.
-3. Extension sends a typed request to the Python engine.
-4. Engine validates request, checks runtime/model readiness, and routes task.
-5. Engine calls Ollama.
-6. Response is returned or streamed to the extension.
-7. Extension renders explanation and, if applicable, a proposed patch.
-8. User reviews and explicitly accepts/rejects the patch.
-9. User verifies the result by running tests or code.
-
-The implementation allows only one inference request at a time. Additional
-requests are rejected with a structured retryable `BUSY`
-error; there is no request queue in the MVP. The user may cancel the active
-request and retry. Cancellation uses request IDs, propagates to the engine,
-closes the active Ollama streaming connection, ignores late results, and
-restarts the engine only if it becomes unresponsive.
-
-Initial configurable operational defaults are a 20-second engine startup
-timeout, 5-second Ollama connection timeout, 120-second first-token timeout,
-120-second streaming inactivity timeout, 10-minute maximum request duration,
-64 KB maximum JSONL request message, and 2,048 maximum generated tokens.
-These are initial defaults for hardware testing, not guaranteed performance
-limits.
-
-## 5. Hardware diagnostics
-
-- Prefer supported OS APIs and well-defined tools.
-- NVIDIA GPU metrics may use `nvidia-smi` and/or NVML when installed.
-- CPU, RAM, CUDA, temperature, and power information vary by platform and hardware.
-- Missing metrics must be reported as unavailable, not fabricated.
-- Compatibility is an estimate; measure actual performance.
-
-`hardware_diagnostics` reports CPU cores/architecture, total and available
-RAM, optional NVIDIA GPU/VRAM data, installed Ollama models, transparent
-`Comfortable`, `Tight`, `Too Large`, or `Unknown` fit labels, and actionable
-setup guidance. The `localdev-ai.checkHardware` command presents this data in
-the `LocalDev AI Hardware` OutputChannel.
-
-## 6. Learning and reliability features
-
-- `explain_traceback` explains parsed Python syntax and runtime tracebacks.
-- `propose_patch` returns a minimal unified diff for explicit review.
-- `hintOnly` controls hint-first prompts for explanation and patch requests.
-- `engine/scripts/benchmark.py` measures TTFT, total latency, engine RSS, and
-  local-endpoint privacy for four representative requests.
-
-## 7. Implemented technology
-
-| Area | Implementation | Notes |
-|---|---|---|
-| Editor | VS Code Extension API + TypeScript | Native integration |
-| Engine | Python | Diagnostics, inference orchestration, tests |
-| Inference | Ollama | Local model runtime |
-| CLI diagnostics | JSONL benchmark script | Dependency-free |
-| GPU monitoring | `nvidia-smi` | NVIDIA-specific |
-| Python analysis | `ast` | Initial lightweight structural checks |
-| Tests | pytest + extension tests | Unit and integration coverage |
-| Local persistence | SQLite only if needed | Not required for MVP |
-
-## 8. Failure handling
-
-- Ollama unavailable → show how to start/check it.
-- Model missing → explain how to pull/select a compatible model.
-- Request timeout → show concise error and allow retry.
-- Hardware metrics unavailable → continue with partial diagnostics.
-- Model output malformed → do not apply a patch; show safe error.
-- Resource pressure → stop optional work where feasible and explain limits.
-
-## 9. Security and privacy boundaries
-
-- Default inference path is local.
-- No generated code is executed automatically.
-- Patch application requires user approval.
-- Avoid logging source code, secrets, or full prompts by default.
-- Document model-download network activity.
-- Verify dependencies and actual network behavior.
-
-## 10. Architecture decisions and validation
-
-The transport, process lifecycle, supported runtime/toolchain policy, request
-schema, streaming strategy, cancellation boundary, Ollama endpoints, and
-initial operational defaults are recorded in
-`ADR-001-EXTENSION-ENGINE-COMMUNICATION.md`. Hardware metrics and model
-recommendations are implemented as best-effort estimates. Older Ollama
-compatibility and macOS behavior remain documented validation limitations.
-
-### Phase 2 Task 1 lifecycle implementation
-
-The extension discovers a user-managed Python 3.12+ interpreter, creates a
-virtual environment under VS Code global storage, and starts the engine with
-stdio pipes. The environment is created with `python -m venv`; no global
-package installation is performed. The current engine has no runtime
-dependencies, so dependency installation is intentionally not performed.
-
-The extension waits up to 20 seconds for the engine's unscoped JSONL
-`event: "ready"` startup message. It captures stdout for protocol parsing and
-stderr for diagnostics, prevents duplicate starts, detects startup failure and
-unexpected exit, closes stdin for graceful shutdown, and force-terminates
-after a bounded wait. The implementation uses platform-neutral Node.js process
-handling; Windows and Ubuntu validation is complete, while macOS remains
-unvalidated.
-
-For packaged extensions, the build stages only `engine/src` into the VSIX
-under `extension/engine/src`; activation resolves that bundled path rather
-than a repository-relative path. The VSIX excludes tests, source maps,
-`node_modules`, virtual environments, and Python bytecode. The virtual
-environment is created below VS Code global storage. An existing valid
-environment is reused after Python-version validation; an existing invalid
-path is rejected without modification.
-
-### Phase 2 Task 2 Ollama readiness implementation
-
-Ollama communication remains inside the Python engine and uses the standard
-library HTTP client. The extension sends `discover_models` and `select_model`
-requests over the existing JSONL process channel; it never calls Ollama
-directly. The endpoint defaults to loopback and is configurable through the
-`localdev-ai.ollamaEndpoint` setting. The connection timeout defaults to five
-seconds and is configurable through `localdev-ai.ollamaTimeoutSeconds`.
-
-Task 2 retrieves only `/api/version` and `/api/tags`. It parses model names,
-sizes, digests, timestamps, and safe metadata, accepts an empty list, and
-reports malformed or unavailable responses with structured actionable errors.
-The selected model is stored in the global VS Code configuration only after
-the engine validates that it is currently installed. No model is downloaded
-or recommended without sufficient hardware information.
-
-### Phase 2 Task 4 streaming explanation implementation
-
-The Python engine performs streaming `POST /api/chat` requests after
-revalidating the selected model against `/api/tags`. Ollama newline-delimited
-chunks are parsed in Python and non-empty `message.content` values are emitted
-as request-scoped JSONL token events with sequence numbers beginning at one.
-Exactly one terminal response or structured error follows the stream. The
-extension correlates events by request ID, appends tokens incrementally, and
-rejects duplicate or out-of-order sequences without displaying corrupted
-output. Code execution remains out of scope; patch generation and explicit
-patch review are implemented in Phase 3.
-
-The extension's explain command requires a Python editor selection and a
-stored selected model, asks for an optional question, runs the request under a
-VS Code progress notification, and displays the result in an output channel.
-
-### Phase 2 Task 5 cancellation implementation
-
-Inference runs in a Python worker thread so the main JSONL loop can continue
-reading control messages. A matching cancellation message sets the active
-request's cancellation event and closes its Ollama response; the worker then
-suppresses late tokens and terminal output because the engine has already
-emitted exactly one `REQUEST_CANCELLED` error. The extension connects the VS
-Code progress cancellation token to the request ID, releases pending state on
-the terminal message, and ignores events for completed requests. The active
-request remains occupied until its worker has cleaned up, preserving the
-one-active-inference rule during cancellation races.
+- **Privacy:** Local inference defaults to `http://127.0.0.1:11434`. Network access only occurs when the user explicitly triggers `pull_model` or opens external links. Source code is not persisted to an external database or sent to cloud LLM APIs.
+- **VSIX Packaging:** `extension/scripts/stage-engine.js` copies only `engine/src` into `extension/engine/src`, and `extension/.vscodeignore` excludes tests, source maps, `src/`, `scripts/`, `node_modules/`, and `__pycache__/`.
+- **Platform Status:** Windows and Ubuntu 26.10 live Ollama workflows are validated; macOS remains unvalidated.

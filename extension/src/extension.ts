@@ -27,10 +27,16 @@ function hardwareMessage(response: { message?: unknown } | undefined): Record<st
 
 function ollamaOptions(): Record<string, unknown> {
   const configuration = vscode.workspace.getConfiguration('localdev-ai');
+  const useGpu = configuration.get<boolean>('useGpu', true);
+  const numGpuLayers = configuration.get<number>('numGpuLayers', -1);
+  const numCtx = configuration.get<number>('numCtx', 0);
   return {
     ollama_endpoint: configuration.get<string>('ollamaEndpoint', 'http://127.0.0.1:11434'),
     ollama_timeout_seconds: configuration.get<number>('ollamaTimeoutSeconds', 5),
     hint_only: configuration.get<boolean>('hintOnly', false),
+    use_gpu: useGpu,
+    ...(useGpu && numGpuLayers >= 0 ? { num_gpu: numGpuLayers } : {}),
+    ...(numCtx > 0 ? { num_ctx: numCtx } : {}),
   };
 }
 
@@ -366,6 +372,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const toggleAutocomplete = vscode.commands.registerCommand('localdev-ai.toggleAutocomplete', () => {
     const next = !inlineCompletionProvider.isEnabled();
     inlineCompletionProvider.setEnabled(next);
+    chatProvider.syncConfigState();
     void vscode.window.showInformationMessage(`LocalDev AI: Tab Autocomplete ${next ? 'Enabled' : 'Disabled'}`);
   });
 
@@ -376,12 +383,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     { webviewOptions: { retainContextWhenHidden: true } },
   );
 
+  const toggleGpu = vscode.commands.registerCommand('localdev-ai.toggleGpu', async () => {
+    await chatProvider.toggleGpu();
+  });
+
   const openChat = vscode.commands.registerCommand('localdev-ai.openChat', async () => {
     await vscode.commands.executeCommand('localdev-ai.chatView.focus');
   });
 
   const newChat = vscode.commands.registerCommand('localdev-ai.newChat', async () => {
     await vscode.commands.executeCommand('localdev-ai.chatView.focus');
+    chatProvider.startNewChat();
+  });
+
+  const configWatcher = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration('localdev-ai')) {
+      chatProvider.syncConfigState();
+    }
   });
 
   context.subscriptions.push(
@@ -397,6 +415,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     newChat,
     inlineCompletionDisposable,
     toggleAutocomplete,
+    toggleGpu,
+    configWatcher,
   );
 }
 

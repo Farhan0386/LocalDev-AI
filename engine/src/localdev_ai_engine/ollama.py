@@ -72,6 +72,9 @@ class OllamaClient:
         first_token_timeout_seconds: float = DEFAULT_FIRST_TOKEN_TIMEOUT_SECONDS,
         inactivity_timeout_seconds: float = DEFAULT_STREAMING_INACTIVITY_TIMEOUT_SECONDS,
         max_request_duration_seconds: float = DEFAULT_MAX_REQUEST_DURATION_SECONDS,
+        use_gpu: bool = True,
+        num_gpu: int | None = None,
+        num_ctx: int | None = None,
     ):
         self.endpoint = _normalise_endpoint(endpoint)
         self.timeout_seconds = timeout_seconds
@@ -79,7 +82,50 @@ class OllamaClient:
         self.first_token_timeout_seconds = first_token_timeout_seconds
         self.inactivity_timeout_seconds = inactivity_timeout_seconds
         self.max_request_duration_seconds = max_request_duration_seconds
+        self.default_use_gpu = use_gpu
+        self.default_num_gpu = num_gpu
+        self.default_num_ctx = num_ctx
         self.last_stats: dict[str, Any] = {}
+
+    def configure_inference_options(
+        self,
+        *,
+        use_gpu: bool | None = None,
+        num_gpu: int | None = None,
+        num_ctx: int | None = None,
+    ) -> None:
+        """Set default GPU offload and context window options for subsequent requests."""
+        if use_gpu is not None:
+            self.default_use_gpu = use_gpu
+        if num_gpu is not None:
+            self.default_num_gpu = num_gpu
+        if num_ctx is not None:
+            self.default_num_ctx = num_ctx
+
+    def _build_inference_options(
+        self,
+        *,
+        use_gpu: bool | None = None,
+        num_gpu: int | None = None,
+        num_ctx: int | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        options: dict[str, Any] = dict(extra) if extra else {}
+        effective_use_gpu = self.default_use_gpu if use_gpu is None else use_gpu
+        effective_num_gpu = self.default_num_gpu if num_gpu is None else num_gpu
+        effective_num_ctx = self.default_num_ctx if num_ctx is None else num_ctx
+
+        if not effective_use_gpu:
+            options["num_gpu"] = 0
+        elif isinstance(effective_num_gpu, int) and not isinstance(effective_num_gpu, bool) and effective_num_gpu >= 0:
+            options["num_gpu"] = effective_num_gpu
+        else:
+            options["num_gpu"] = -1
+
+        if isinstance(effective_num_ctx, int) and not isinstance(effective_num_ctx, bool) and effective_num_ctx > 0:
+            options["num_ctx"] = effective_num_ctx
+
+        return options
 
     def _get_json(self, path: str) -> dict[str, Any]:
         request = Request(f"{self.endpoint}{path}", method="GET")
@@ -287,14 +333,15 @@ class OllamaClient:
                 "Refresh models and choose an installed model.",
                 retryable=False,
             )
-        response = self._post_json(
-            "/api/chat",
-            {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-            },
-        )
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+        }
+        inference_options = self._build_inference_options()
+        if inference_options:
+            payload["options"] = inference_options
+        response = self._post_json("/api/chat", payload)
         message = response.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str) or not content.strip():
@@ -344,8 +391,11 @@ class OllamaClient:
         on_token: Callable[[str], None] | None = None,
         cancel_event: Event | None = None,
         on_stream_open: Callable[[Any], None] | None = None,
+        num_ctx: int | None = None,
+        use_gpu: bool | None = None,
+        num_gpu: int | None = None,
     ) -> str:
-        """Stream a multi-turn chat response with workspace context and mode support."""
+        """Stream a multi-turn chat response with budgeted workspace context and GPU/ctx options."""
 
         if not any(item.name == model for item in self.models()):
             raise OllamaError(
@@ -354,15 +404,70 @@ class OllamaClient:
                 "Refresh models and choose an installed model.",
                 retryable=False,
             )
+        effective_num_ctx = self.default_num_ctx if num_ctx is None else num_ctx
         system_prompt = self._build_chat_system_prompt(mode, workspace_context)
-        payload_messages = [{"role": "system", "content": system_prompt}]
+        payload_messages = self._budget_chat_messages(system_prompt, messages, effective_num_ctx)
+        return self._stream_chat_messages(
+            model,
+            payload_messages,
+            on_token,
+            cancel_event,
+            on_stream_open,
+            num_ctx=num_ctx,
+            use_gpu=use_gpu,
+            num_gpu=num_gpu,
+        )
+
+    @staticmethod
+    def _budget_chat_messages(
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        num_ctx: int | None,
+    ) -> list[dict[str, str]]:
+        """Bound multi-turn history and system prompt to stay safely within num_ctx."""
+        char_budget = max(3200, int(num_ctx * 2.8)) if isinstance(num_ctx, int) and num_ctx > 0 else 12000
+        max_system_chars = int(char_budget * 0.55)
+        if len(system_prompt) > max_system_chars:
+            system_prompt = system_prompt[:max_system_chars] + "\n... [workspace context trimmed to fit context window]"
+
+        cleaned: list[dict[str, str]] = []
         for msg in messages:
-            if isinstance(msg, dict) and "role" in msg and "content" in msg:
-                payload_messages.append({
-                    "role": str(msg["role"]),
-                    "content": str(msg["content"]),
-                })
-        return self._stream_chat_messages(model, payload_messages, on_token, cancel_event, on_stream_open)
+            if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
+                continue
+            role = str(msg["role"]).strip()
+            content = str(msg["content"])
+            if role not in {"user", "assistant", "system"}:
+                continue
+            if role == "assistant" and not content.strip():
+                continue
+            cleaned.append({"role": role, "content": content})
+
+        remaining = max(1200, char_budget - len(system_prompt))
+        selected_reversed: list[dict[str, str]] = []
+        dropped_count = 0
+
+        for idx in range(len(cleaned) - 1, -1, -1):
+            msg = cleaned[idx]
+            content = msg["content"]
+            is_latest = idx == len(cleaned) - 1
+            if is_latest and len(content) > remaining:
+                content = content[:remaining] + "\n... [prompt truncated to fit context window]"
+            msg_len = len(content) + 32
+            if not is_latest and msg_len > remaining:
+                dropped_count = idx + 1
+                break
+            selected_reversed.append({"role": msg["role"], "content": content})
+            remaining = max(0, remaining - msg_len)
+
+        selected_reversed.reverse()
+        result = [{"role": "system", "content": system_prompt}]
+        if dropped_count > 0:
+            result.append({
+                "role": "system",
+                "content": f"[Note: {dropped_count} earlier turn(s) omitted to fit local context window.]",
+            })
+        result.extend(selected_reversed)
+        return result
 
     def pull_model(
         self,
@@ -371,7 +476,7 @@ class OllamaClient:
         cancel_event: Event | None = None,
         on_stream_open: Callable[[Any], None] | None = None,
     ) -> str:
-        """Pull a model from Ollama, streaming download progress."""
+        """Pull a model from Ollama, streaming download progress and validating completion."""
         name = name.strip()
         if not name:
             raise OllamaError("REQUEST_INVALID", "No model name was provided to pull.", "Provide a model name and retry.", retryable=False)
@@ -382,8 +487,11 @@ class OllamaClient:
             method="POST",
         )
         last_status = ""
+        last_pct = -1
+        saw_success = False
+        pull_timeout = max(self.timeout_seconds, 600.0)
         try:
-            with self._opener(request, timeout=self.timeout_seconds) as response:
+            with self._opener(request, timeout=pull_timeout) as response:
                 if on_stream_open:
                     on_stream_open(response)
                 status = getattr(response, "status", 200)
@@ -396,34 +504,74 @@ class OllamaClient:
                 for raw_line in response:
                     if cancel_event and cancel_event.is_set():
                         raise OllamaError("REQUEST_CANCELLED", "The model pull was cancelled.", "Pull the model again when ready.", retryable=False)
-                    line = raw_line.decode("utf-8").strip() if isinstance(raw_line, bytes) else str(raw_line).strip()
+                    line = raw_line.decode("utf-8", errors="replace").strip() if isinstance(raw_line, bytes) else str(raw_line).strip()
                     if not line:
                         continue
                     try:
                         chunk = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if isinstance(chunk, dict):
-                        status_text = chunk.get("status", "")
-                        total = chunk.get("total")
-                        completed = chunk.get("completed")
-                        if isinstance(total, int) and isinstance(completed, int) and total > 0:
-                            pct = int((completed / total) * 100)
-                            msg = f"{status_text} ({pct}%)"
-                        else:
-                            msg = status_text
-                        if msg and msg != last_status:
-                            last_status = msg
+                    if not isinstance(chunk, dict):
+                        continue
+                    if chunk.get("error"):
+                        raise OllamaError(
+                            "OLLAMA_PULL_FAILED",
+                            f"Failed to pull '{name}': {chunk['error']}",
+                            "Verify the model tag exists in the Ollama library and check your network connection.",
+                        )
+                    status_text = str(chunk.get("status", "")).strip()
+                    total = chunk.get("total")
+                    completed = chunk.get("completed")
+                    digest = str(chunk.get("digest", "")).strip()
+                    digest_short = digest.split(":")[-1][:8] if digest else ""
+                    if isinstance(total, int) and isinstance(completed, int) and total > 0:
+                        pct = min(100, max(0, int((completed / total) * 100)))
+                        comp_mb = completed / (1024 * 1024)
+                        tot_mb = total / (1024 * 1024)
+                        prefix = f"{status_text} [{digest_short}]" if digest_short else status_text
+                        msg = f"{prefix} ({pct}% — {comp_mb:.0f}/{tot_mb:.0f} MiB)"
+                        if pct != last_pct or status_text != last_status:
+                            last_pct = pct
+                            last_status = status_text
                             if on_progress:
                                 on_progress(msg)
-                        if chunk.get("status") == "success":
-                            return f"Model '{name}' pulled successfully."
+                    else:
+                        msg = status_text
+                        if msg and msg != last_status:
+                            last_status = msg
+                            last_pct = -1
+                            if on_progress:
+                                on_progress(msg)
+                    if status_text == "success":
+                        saw_success = True
+                        return f"Model '{name}' pulled successfully."
         except OllamaError:
             raise
-        except (HTTPError, URLError, TimeoutError, OSError) as error:
+        except HTTPError as error:
+            detail = ""
+            try:
+                body = error.read().decode("utf-8", errors="replace")
+                parsed = json.loads(body)
+                if isinstance(parsed, dict) and parsed.get("error"):
+                    detail = f" ({parsed['error']})"
+            except Exception:
+                pass
+            raise OllamaError(
+                "OLLAMA_PULL_FAILED",
+                f"Ollama rejected pulling '{name}'{detail}.",
+                "Check the model tag name and Ollama server logs, then retry.",
+            ) from error
+        except (URLError, TimeoutError, OSError) as error:
             if cancel_event and cancel_event.is_set():
                 raise OllamaError("REQUEST_CANCELLED", "The model pull was cancelled.", "Pull the model again when ready.", retryable=False) from error
             raise OllamaError("OLLAMA_UNAVAILABLE", f"Ollama model pull failed: {error}", "Check network connection and Ollama service, then retry.") from error
+
+        if not saw_success:
+            raise OllamaError(
+                "OLLAMA_STREAM_INTERRUPTED",
+                f"Pull stream for '{name}' ended before completion.",
+                "Retry pulling the model or check Ollama server connectivity.",
+            )
         return f"Model '{name}' pulled successfully."
 
     def copy_model(self, source: str, destination: str) -> dict[str, Any]:
@@ -465,6 +613,8 @@ class OllamaClient:
         max_tokens: int = 64,
         temperature: float = 0.1,
         cancel_event: Event | None = None,
+        use_gpu: bool | None = None,
+        num_gpu: int | None = None,
     ) -> str:
         """Fast Fill-In-the-Middle (FIM) code completion for ghost-text suggestions."""
         if not any(item.name == model for item in self.models()):
@@ -475,24 +625,29 @@ class OllamaClient:
                 retryable=False,
             )
         prompt = f"<|fim_prefix|>{prefix}<|fim_suffix|>{suffix}<|fim_middle|>"
+        gen_options = self._build_inference_options(
+            use_gpu=use_gpu,
+            num_gpu=num_gpu,
+            extra={
+                "num_predict": max_tokens,
+                "temperature": temperature,
+                "stop": ["<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>", "<|endoftext|>", "<|file_separator|>", "\n\n"],
+            },
+        )
         request = Request(
             f"{self.endpoint}/api/generate",
             data=json.dumps({
                 "model": model,
                 "prompt": prompt,
                 "stream": False,
-                "options": {
-                    "num_predict": max_tokens,
-                    "temperature": temperature,
-                    "stop": ["<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>", "<|endoftext|>", "<|file_separator|>", "\n\n"],
-                },
+                "options": gen_options,
                 "keep_alive": "5m",
             }).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         try:
-            with self._opener(request, timeout=self.timeout_seconds) as response:
+            with self._opener(request, timeout=max(self.timeout_seconds, 15.0)) as response:
                 status = getattr(response, "status", 200)
                 if status < 200 or status >= 300:
                     raise OllamaError("OLLAMA_HTTP_ERROR", "Ollama rejected completion request.", "Check Ollama status and retry.")
@@ -516,14 +671,25 @@ class OllamaClient:
         on_token: Callable[[str], None] | None = None,
         cancel_event: Event | None = None,
         on_stream_open: Callable[[Any], None] | None = None,
+        num_ctx: int | None = None,
+        use_gpu: bool | None = None,
+        num_gpu: int | None = None,
     ) -> str:
+        inference_options = self._build_inference_options(
+            use_gpu=use_gpu,
+            num_gpu=num_gpu,
+            num_ctx=num_ctx,
+        )
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+        }
+        if inference_options:
+            body["options"] = inference_options
         request = Request(
             f"{self.endpoint}/api/chat",
-            data=json.dumps({
-                "model": model,
-                "messages": messages,
-                "stream": True,
-            }).encode("utf-8"),
+            data=json.dumps(body).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
@@ -534,8 +700,11 @@ class OllamaClient:
         first_token_seen = Event()
         stream_started_at = monotonic()
         last_token_at = [stream_started_at]
+        socket_timeout = max(self.timeout_seconds, self.first_token_timeout_seconds)
+        effective_num_gpu = inference_options.get("num_gpu", -1)
+        effective_num_ctx = inference_options.get("num_ctx")
         try:
-            with self._opener(request, timeout=self.timeout_seconds) as response:
+            with self._opener(request, timeout=socket_timeout) as response:
                 if on_stream_open:
                     on_stream_open(response)
                 status = getattr(response, "status", 200)
@@ -601,6 +770,13 @@ class OllamaClient:
                             "Retry the explanation request or check the Ollama version.",
                             retryable=False,
                         )
+                    if chunk.get("error"):
+                        raise OllamaError(
+                            "OLLAMA_INFERENCE_ERROR",
+                            f"Ollama inference error: {chunk['error']}",
+                            "Try reducing context size, switching to a smaller model, or toggling dGPU.",
+                            retryable=True,
+                        )
                     message = chunk.get("message")
                     content = message.get("content") if isinstance(message, dict) else None
                     if content is not None and not isinstance(content, str):
@@ -635,6 +811,9 @@ class OllamaClient:
                             "total_duration_ms": round((total_duration or 0) / 1e6, 1),
                             "tokens_per_second": tok_per_sec,
                             "ttft_ms": ttft_ms,
+                            "num_gpu": effective_num_gpu,
+                            "num_ctx": effective_num_ctx,
+                            "execution_mode": "CPU" if effective_num_gpu == 0 else "GPU",
                         }
                         break
         except OllamaError:

@@ -1,120 +1,74 @@
 # LocalDev AI — Testing and Quality Plan
 
-**Status:** Final baseline for the signed-off Phase 1–5 implementation
+**Status:** Verified baseline for the completed Phase 1–7 + Final Release implementation (40 Python pytest tests, 13 Node extension tests).
 
-## 1. Testing goals
+## 1. Testing Goals
 
-Validate useful coding assistance, safe patch behavior, reliability, hardware compatibility, privacy, and resource efficiency. Results should be reproducible and tied to documented hardware and model versions.
+Validate useful coding assistance, safe patch/insertion behavior, multi-turn context stability, hardware diagnostics, local privacy, and resource efficiency using reproducible automated suites and live local benchmarks.
 
-## 2. Test layers
+## 2. Automated Test Suites
 
-### Unit tests
-- Request validation and task routing.
-- Prompt construction and context minimization.
-- Error normalization.
-- Model-fit heuristic boundaries.
-- Hardware metric parsing.
-- Patch validation and diff generation.
-- Timeout and cancellation logic where implemented.
+### Python Engine Suite (`engine/tests/` — 40 tests)
 
-### Integration tests
-- Engine can detect a running Ollama instance.
-- Installed model discovery works.
-- A simple explanation request completes.
-- Missing Ollama/model produces actionable errors.
-- Streaming is parsed correctly if implemented.
-- Extension and engine communicate over the selected transport.
+- **`test_engine.py` (3 tests):** Package import and `health_status()` isolation.
+- **`test_ollama.py` (7 tests):** `/api/version` & `/api/tags` parsing, empty model list handling, malformed metadata errors, timeout/unavailable actionable errors, endpoint scheme validation, and `validate_selected_model`.
+- **`test_explain.py` (13 tests):** Non-streaming & streaming `explain_code`, empty/missing model rejection, malformed responses, HTTP/timeout errors, cooperative cancellation before token emission, and watchdog first-token timeout closing the response stream.
+- **`test_protocol.py` (7 tests):** JSONL request correlation, sequential `token` events, `BUSY` concurrency rejection, duplicate cancellation idempotency, malformed JSON/type/field rejection, `REQUEST_TOO_LARGE` 64-KiB enforcement with `request_id` sniffing, and sequential request handling.
+- **`test_chat.py` (10 tests):** Hardware-tier `recommend_model` + varied `MODEL_CATALOG` alternatives, `chat_session_stream` workspace context & mode prompts, `use_gpu: false` (`num_gpu: 0`), `num_ctx` option forwarding & multi-turn history trimming, `pull_model` progress/error-chunk/incomplete-stream handling, `copy_model` & `delete_model`, FIM `inline_complete`, and `tok/s`/`ttft_ms` telemetry.
 
-### Extension tests
-- Commands register and invoke the expected task.
-- Selected code is passed correctly.
-- Loading and error states render appropriately.
-- Patch preview appears before any edit.
-- Reject leaves the document unchanged.
-- Apply requires explicit user action.
-
-### Manual acceptance tests
-- Install/setup from documented instructions on a clean environment.
-- Explain a short Python function.
-- Diagnose an index error and explain the cause.
-- Request a hint without immediately receiving the full solution.
-- Review, reject, and apply a proposed minimal patch.
-- Use the extension when no supported GPU is present.
-- Test unavailable runtime/model and resource-pressure scenarios.
-
-## 3. Quality evaluation set
-
-The version-controlled benchmark set in `engine/scripts/benchmark.py` covers:
-- Syntax errors.
-- Index and key errors.
-- Type errors.
-- Incorrect conditions and loops.
-- Function arguments and return values.
-- Common standard-library usage.
-- Small code explanation and patch-proposal tasks.
-
-For each case, record the task, expected properties, model/runtime version, hardware, outcome, and reviewer notes. Avoid evaluating only on cherry-picked successful examples.
-
-## 4. Metrics
-
-| Metric | Method |
-|---|---|
-| Task success | Repeatable rubric for correctness and usefulness |
-| Patch correctness | Tests plus manual review |
-| Time to first token | Request start to first streamed output, if streaming exists |
-| Total latency | Request start to completed response |
-| Throughput | Tokens per second where available |
-| RAM | Process/system measurements during test |
-| GPU memory | Supported vendor tools/APIs |
-| Temperature/power | Only when exposed by hardware and OS |
-| Model fit | Compare estimate with observed load and successful inference |
-| Reliability | Success/failure counts across defined scenarios |
-
-Do not treat the recorded values as universal thresholds. Compare future
-measurements with the same model, hardware, context, and Ollama settings.
-
-## 5. Hardware compatibility matrix
-
-Test and document, when available:
-- CPU-only machine.
-- NVIDIA GPU with limited VRAM.
-- NVIDIA GPU with more VRAM.
-- Different system RAM sizes.
-- Ollama installed but stopped.
-- Ollama running with no suitable model installed.
-- Unsupported or unavailable GPU/temperature metrics.
-
-Record OS, CPU, RAM, GPU/VRAM, driver/runtime versions, model, quantization, context settings, and test conditions.
-
-## 6. Privacy and safety tests
-
-- Confirm core coding tasks do not call a cloud AI API.
-- Inspect network behavior and dependency telemetry.
-- Confirm prompts/source code are not written to logs by default.
-- Confirm generated code is not executed automatically.
-- Confirm no patch is applied without explicit approval.
-- Confirm errors do not leak source code or secrets.
-
-## 7. Benchmark & Reliability Baseline
-
-Run the dependency-free benchmark from the repository root:
+Run from repository root:
 
 ```powershell
-python engine\scripts\benchmark.py --model qwen3:4b
+$env:PYTHONPATH = "engine/src"
+python -m pytest engine/tests -v
 ```
 
-It exercises syntax-error explanation, index-error explanation, code explanation, and patch proposal through the local JSONL engine. The summary records time-to-first-token where streaming is available, total latency, peak engine RSS when exposed by the operating system, and a privacy verdict that fails for non-local Ollama endpoints. Requests are bounded and a timed-out inference is cancelled before the process exits.
+### Extension Node Suite (`extension/tests/` — 13 tests)
 
-The recorded live baseline used Windows with 16 logical CPU cores, approximately 14.7 GiB system RAM, an NVIDIA GeForce RTX 3050 Laptop GPU with 4 GiB VRAM, and Ollama `qwen3:4b`. Ubuntu 26.10 was also validated with Ollama `0.40.15` and `qwen2.5:1.5b`; streaming and cooperative cancellation completed successfully. Resource-pressure results depend on other applications, context size, quantization, and Ollama scheduling, so benchmark values are comparative rather than universal targets.
+- **`diffUtils.test.js` (3 tests):** Clean unified diff patching, mismatched hunk rejection, and git metadata (`diff --git`, `index`) + ```` ```patch ```` fence stripping.
+- **`pythonEngine.test.js` (10 tests):** Python 3.12+ discovery & incompatible interpreter rejection, safe `venv` validation without overwriting existing directories, single-start deduplication & `ready` handshake, startup timeout, unexpected exit -> `ERROR`, ordered streaming token delivery, out-of-order token rejection, cancellation & retry, unkeyed error rejection (no hang), and 64-KiB payload guard.
 
-Known limitations: macOS remains unvalidated; process RSS metrics vary by operating system; non-streaming tasks have no TTFT value; model-fit estimates are conservative size heuristics; and local model size/VRAM bounds can prevent inference even when the engine itself starts.
+Run from repository root:
 
-## 8. Release checklist
+```powershell
+npm --prefix extension test
+```
 
-- [x] Automated tests pass.
-- [x] Known failure modes are tested.
-- [x] Setup instructions are documented and verified in supported environments.
-- [x] Model and hardware details accompany benchmark results.
-- [x] Privacy/network behavior is documented.
-- [x] Patch review and explicit consent work.
-- [x] Limitations and unsupported metrics are clearly stated.
+## 3. Manual & Interactive Verification Checklist
+
+- Install `extension/localdev-ai-0.0.1.vsix` into VS Code and confirm sidebar renders cleanly in both Dark and Light themes.
+- Verify first-run onboarding when Ollama is stopped (`Start Ollama`), when no models exist (`Pull`), and when ready.
+- Toggle `dGPU: ON` / `dGPU: OFF` and verify `telemetry-exec` updates (`GPU` vs `CPU Only`).
+- Pull a custom model tag, cancel a pull mid-stream, copy a model, and delete a model with confirmation.
+- Send 5+ multi-turn prompts with `@file` and `@workspace` context attached; confirm no context-overflow hangs or `5s` timeout errors occur.
+- Click **Insert** on generated code blocks (with and without editor focus) and **✓ Approve / Apply** on a proposed `Edit` card; verify code is inserted verbatim without HTML entity corruption and cursor scrolls to the edit.
+- Create, switch, rename, and delete sessions in the **History** drawer.
+- Toggle `Tab: ON/OFF` and confirm inline ghost-text completions do not block chat turns.
+
+## 4. Quality Evaluation & Benchmark (`engine/scripts/benchmark.py`)
+
+Run the dependency-free local JSONL benchmark from the repository root against a running Ollama server:
+
+```powershell
+python engine/scripts/benchmark.py --model qwen3:4b
+```
+
+The script executes four representative cases (`syntax error`, `index error`, `code explanation`, `patch proposal`) and reports:
+- **TTFT** (for streaming `explain_code`) and **Total latency** per case.
+- **Peak engine RSS** (Windows `GetProcessMemoryInfo` / Linux `VmHWM` / macOS `ps`) and benchmark `tracemalloc` peak.
+- **Privacy verdict:** `PASS` only when `--ollama-endpoint` resolves to `127.0.0.1`, `::1`, or `localhost`.
+
+## 5. Recorded Live Validation & Known Limitations
+
+- **Windows live baseline:** Verified with Ollama `0.40.13` (`qwen3:4b`) on 16 logical CPU cores, ~14.7 GiB RAM, and NVIDIA GeForce RTX 3050 Laptop GPU (4 GiB VRAM).
+- **Ubuntu 26.10 live validation:** Verified with Ollama `0.40.15` (`qwen2.5:1.5b`) for model discovery, 548 streaming events, cooperative `REQUEST_CANCELLED`, and `OLLAMA_UNAVAILABLE`.
+- **Known limitations:** **macOS remains unvalidated**; older Ollama releases remain unvalidated; process RSS availability varies by OS; non-streaming tasks have no TTFT metric; and model-fit labels are conservative heuristics.
+
+## 6. Release Checklist
+
+- [x] Extension TypeScript compilation passes (`npm --prefix extension run compile`).
+- [x] All 13 Node extension tests pass (`npm --prefix extension test`).
+- [x] All 40 Python engine tests pass (`pytest engine/tests`).
+- [x] VSIX package builds cleanly (`npm --prefix extension run package` -> `extension/localdev-ai-0.0.1.vsix`).
+- [x] Privacy, patch consent, context budgeting, and dGPU/CPU controls are implemented and documented.
+- [x] Platform and measurement limitations are clearly stated.

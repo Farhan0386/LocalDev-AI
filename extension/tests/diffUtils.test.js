@@ -45,3 +45,21 @@ test('rejects mismatched hunk in unified diff', () => {
   const patched = applyUnifiedDiff(patch, original);
   assert.equal(patched, undefined);
 });
+
+test('applies diff with git metadata headers and patch fence', () => {
+  const original = 'x = 1\ny = 2';
+  const patch = [
+    '```patch',
+    'diff --git a/app.py b/app.py',
+    'index 111..222 100644',
+    '--- a/app.py',
+    '+++ b/app.py',
+    '@@ -1,2 +1,2 @@',
+    '-x = 1',
+    '+x = 42',
+    ' y = 2',
+    '```',
+  ].join('\n');
+
+  assert.equal(applyUnifiedDiff(patch, original), 'x = 42\ny = 2');
+});

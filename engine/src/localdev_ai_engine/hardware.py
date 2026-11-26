@@ -171,6 +171,165 @@ def estimate_model_fit(hardware: dict[str, Any], models: list[dict[str, Any]]) -
     return {"models": results, "guidance": guidance}
 
 
+MODEL_CATALOG: list[dict[str, Any]] = [
+    # Ultra-Light (<4 GiB RAM/VRAM)
+    {
+        "name": "qwen2.5-coder:0.5b",
+        "label": "Qwen 2.5 Coder 0.5B",
+        "category": "coding",
+        "size_label": "~0.4 GB",
+        "tier": "ultra_light",
+        "description": "Ultra-fast minimal RAM coding assistant for older laptops.",
+    },
+    {
+        "name": "qwen2.5-coder:1.5b",
+        "label": "Qwen 2.5 Coder 1.5B",
+        "category": "coding",
+        "size_label": "~1.0 GB",
+        "tier": "ultra_light",
+        "description": "Best compact coding model for 4 GB RAM or low-VRAM GPUs.",
+    },
+    {
+        "name": "qwen3:1.7b",
+        "label": "Qwen 3 1.7B",
+        "category": "general",
+        "size_label": "~1.4 GB",
+        "tier": "ultra_light",
+        "description": "Modern compact general & coding model with strong reasoning.",
+    },
+    {
+        "name": "llama3.2:1b",
+        "label": "Llama 3.2 1B",
+        "category": "general",
+        "size_label": "~1.3 GB",
+        "tier": "ultra_light",
+        "description": "Lightweight Meta Llama model for quick Q&A and explanations.",
+    },
+    {
+        "name": "gemma3:1b",
+        "label": "Gemma 3 1B",
+        "category": "general",
+        "size_label": "~0.8 GB",
+        "tier": "ultra_light",
+        "description": "Google Gemma 3 compact model with low memory footprint.",
+    },
+    {
+        "name": "deepseek-r1:1.5b",
+        "label": "DeepSeek-R1 1.5B",
+        "category": "reasoning",
+        "size_label": "~1.1 GB",
+        "tier": "ultra_light",
+        "description": "Compact step-by-step reasoning model for debugging.",
+    },
+    # Standard (4-8 GiB VRAM or 8-15 GiB RAM)
+    {
+        "name": "qwen2.5-coder:3b",
+        "label": "Qwen 2.5 Coder 3B",
+        "category": "coding",
+        "size_label": "~1.9 GB",
+        "tier": "standard",
+        "description": "Balanced code generation, patches, and Python explanations.",
+    },
+    {
+        "name": "qwen3:4b",
+        "label": "Qwen 3 4B",
+        "category": "general",
+        "size_label": "~2.6 GB",
+        "tier": "standard",
+        "description": "Versatile Qwen 3 model for coding, reasoning, and chat.",
+    },
+    {
+        "name": "phi4-mini:3.8b",
+        "label": "Phi-4 Mini 3.8B",
+        "category": "reasoning",
+        "size_label": "~2.5 GB",
+        "tier": "standard",
+        "description": "Strong logic and STEM/code reasoning in a 3.8B footprint.",
+    },
+    {
+        "name": "gemma3:4b",
+        "label": "Gemma 3 4B",
+        "category": "general",
+        "size_label": "~3.3 GB",
+        "tier": "standard",
+        "description": "Well-rounded Google Gemma 3 model for 8 GB systems.",
+    },
+    {
+        "name": "llama3.2:3b",
+        "label": "Llama 3.2 3B",
+        "category": "general",
+        "size_label": "~2.0 GB",
+        "tier": "standard",
+        "description": "Fast Meta Llama 3.2 model for everyday coding help.",
+    },
+    {
+        "name": "starcoder2:3b",
+        "label": "StarCoder2 3B",
+        "category": "coding",
+        "size_label": "~1.7 GB",
+        "tier": "standard",
+        "description": "Dedicated code completion and multi-language coding model.",
+    },
+    # Performance (8+ GiB VRAM or 16+ GiB RAM)
+    {
+        "name": "qwen2.5-coder:7b",
+        "label": "Qwen 2.5 Coder 7B",
+        "category": "coding",
+        "size_label": "~4.7 GB",
+        "tier": "performance",
+        "description": "Flagship 7B coding model for refactoring and multi-file edits.",
+    },
+    {
+        "name": "qwen3:8b",
+        "label": "Qwen 3 8B",
+        "category": "general",
+        "size_label": "~5.2 GB",
+        "tier": "performance",
+        "description": "High-accuracy Qwen 3 model for complex coding and architecture.",
+    },
+    {
+        "name": "deepseek-r1:7b",
+        "label": "DeepSeek-R1 7B",
+        "category": "reasoning",
+        "size_label": "~4.7 GB",
+        "tier": "performance",
+        "description": "Deep reasoning model suited for tough bugs and algorithm design.",
+    },
+    {
+        "name": "llama3.1:8b",
+        "label": "Llama 3.1 8B",
+        "category": "general",
+        "size_label": "~4.9 GB",
+        "tier": "performance",
+        "description": "Capable 8B general & coding assistant for 16 GB+ machines.",
+    },
+    {
+        "name": "gemma3:12b",
+        "label": "Gemma 3 12B",
+        "category": "general",
+        "size_label": "~8.1 GB",
+        "tier": "performance",
+        "description": "High-capacity Gemma 3 model for 12 GB+ VRAM or 16 GB+ RAM.",
+    },
+    {
+        "name": "qwen2.5-coder:14b",
+        "label": "Qwen 2.5 Coder 14B",
+        "category": "coding",
+        "size_label": "~9.0 GB",
+        "tier": "performance",
+        "description": "Heavyweight coding model for high-VRAM GPUs or 24 GB+ RAM.",
+    },
+    {
+        "name": "codellama:7b",
+        "label": "CodeLlama 7B",
+        "category": "coding",
+        "size_label": "~3.8 GB",
+        "tier": "performance",
+        "description": "Classic Meta CodeLlama 7B for Python and systems code.",
+    },
+]
+
+
 def get_hardware_tiers(hardware: dict[str, Any]) -> dict[str, Any]:
     """Return hardware tier categorization, max context budget, and recommended model sets."""
     gpu = hardware.get("gpu", {})
@@ -195,34 +354,44 @@ def get_hardware_tiers(hardware: dict[str, Any]) -> dict[str, Any]:
         max_context_chars = 2500
         num_ctx = 2048
 
+    def _tier_models(tier_key: str) -> list[str]:
+        return [entry["name"] for entry in MODEL_CATALOG if entry["tier"] == tier_key]
+
+    def _tier_items(tier_key: str) -> list[dict[str, Any]]:
+        return [dict(entry) for entry in MODEL_CATALOG if entry["tier"] == tier_key]
+
     return {
         "tier": tier,
         "max_context_chars": max_context_chars,
         "num_ctx": num_ctx,
         "ram_gib": round(ram_gib, 1),
         "vram_gib": round(vram_gib, 1),
+        "catalog": [dict(entry) for entry in MODEL_CATALOG],
         "tiers": {
             "ultra_light": {
-                "label": "Ultra-Light (<4GB RAM)",
-                "models": ["qwen2.5-coder:0.5b", "qwen2.5-coder:1.5b"],
-                "description": "Minimal RAM usage, instant response on low-resource laptops.",
+                "label": "Ultra-Light (<4 GB RAM)",
+                "models": _tier_models("ultra_light"),
+                "items": _tier_items("ultra_light"),
+                "description": "Minimal RAM usage, fast responses on low-resource laptops.",
             },
             "standard": {
-                "label": "Standard (8GB RAM)",
-                "models": ["qwen2.5-coder:3b", "deepseek-coder:1.3b"],
-                "description": "Balanced coding reasoning and high accuracy.",
+                "label": "Standard (8 GB RAM / 4 GB VRAM)",
+                "models": _tier_models("standard"),
+                "items": _tier_items("standard"),
+                "description": "Balanced coding, general reasoning, and solid accuracy.",
             },
             "performance": {
-                "label": "Performance (16GB+ RAM / GPU)",
-                "models": ["qwen2.5-coder:7b", "codellama:7b"],
-                "description": "Full capabilities, deep refactoring and multi-file reasoning.",
+                "label": "Performance (16 GB+ RAM / 8 GB+ VRAM)",
+                "models": _tier_models("performance"),
+                "items": _tier_items("performance"),
+                "description": "Full capabilities for refactoring, debugging, and multi-file edits.",
             },
         },
     }
 
 
 def recommend_model(hardware: dict[str, Any]) -> dict[str, Any]:
-    """Recommend the optimal coding model given detected RAM/GPU."""
+    """Recommend optimal coding and general models given detected RAM/GPU."""
     tier_info = get_hardware_tiers(hardware)
     gpu = hardware.get("gpu", {})
     memory = hardware.get("memory", {})
@@ -235,31 +404,38 @@ def recommend_model(hardware: dict[str, Any]) -> dict[str, Any]:
 
     if has_gpu and vram_gib >= 7.5:
         model = "qwen2.5-coder:7b"
-        reason = f"Your system has {vram_gib:.1f} GiB VRAM on {gpu.get('name', 'GPU')}, ideal for running 7B models."
+        reason = f"Your system has {vram_gib:.1f} GiB VRAM on {gpu.get('name', 'GPU')}, ideal for 7B-8B models."
         fit = "Comfortable"
+        alternatives = ["qwen3:8b", "deepseek-r1:7b", "llama3.1:8b", "gemma3:12b"]
     elif has_gpu and vram_gib >= 3.5:
         model = "qwen2.5-coder:3b"
-        reason = f"Your system has {vram_gib:.1f} GiB VRAM on {gpu.get('name', 'GPU')}, fitting 3B models comfortably."
+        reason = f"Your system has {vram_gib:.1f} GiB VRAM on {gpu.get('name', 'GPU')}, fitting 3B-4B models comfortably."
         fit = "Comfortable"
+        alternatives = ["qwen3:4b", "phi4-mini:3.8b", "gemma3:4b", "llama3.2:3b"]
     elif ram_gib >= 15.0:
         model = "qwen2.5-coder:7b"
-        reason = f"Your system has {ram_gib:.1f} GiB RAM, sufficient to run 7B models on CPU/RAM."
+        reason = f"Your system has {ram_gib:.1f} GiB RAM, sufficient to run 7B-8B models on CPU/RAM."
         fit = "Comfortable"
+        alternatives = ["qwen3:8b", "deepseek-r1:7b", "llama3.1:8b", "qwen3:4b"]
     elif ram_gib >= 7.5:
         model = "qwen2.5-coder:3b"
-        reason = f"Your system has {ram_gib:.1f} GiB RAM, ideal for 3B models."
+        reason = f"Your system has {ram_gib:.1f} GiB RAM, ideal for 3B-4B models."
         fit = "Comfortable"
+        alternatives = ["qwen3:4b", "phi4-mini:3.8b", "llama3.2:3b", "gemma3:4b"]
     else:
         model = "qwen2.5-coder:1.5b"
         reason = f"Lightweight model suited for systems with limited memory ({ram_gib:.1f} GiB detected)."
         fit = "Comfortable"
+        alternatives = ["qwen3:1.7b", "llama3.2:1b", "gemma3:1b", "deepseek-r1:1.5b"]
 
     return {
         "model": model,
+        "alternatives": alternatives,
         "reason": reason,
         "fit": fit,
         "tier": tier_info["tier"],
         "num_ctx": tier_info["num_ctx"],
         "max_context_chars": tier_info["max_context_chars"],
         "tiers": tier_info["tiers"],
+        "catalog": tier_info["catalog"],
     }

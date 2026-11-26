@@ -87,6 +87,8 @@ export class LocalDevInlineCompletionProvider implements vscode.InlineCompletion
     });
 
     try {
+      const useGpu = config.get<boolean>('useGpu', true);
+      const numGpuLayers = config.get<number>('numGpuLayers', -1);
       const response = await engine.request(
         'inline_complete',
         {
@@ -97,6 +99,8 @@ export class LocalDevInlineCompletionProvider implements vscode.InlineCompletion
           suffix,
           max_tokens: 64,
           temperature: 0.1,
+          use_gpu: useGpu,
+          ...(useGpu && numGpuLayers >= 0 ? { num_gpu: numGpuLayers } : {}),
         },
         undefined,
         this._activeCts.token,
